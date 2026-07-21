@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TypedDict
 
-from .audio import probe_audio
+from .audio import normalize_audio, probe_audio
 from .diarize import DiarizationSettings, SpeakerSegment, diarize
 from .render import render_speakers_markdown, render_speakers_srt
 from .transcribe import TranscriptionSettings, transcribe
@@ -213,20 +213,29 @@ def process(source: Path, settings: Settings, force: bool = False) -> ProcessRes
                 probe = probe_audio(source)
                 _atomic_json(artifact_dir / "source.json", {"path": str(source), "sha256": job_id, "size": source.stat().st_size, "mtime": source.stat().st_mtime, "media": probe})
                 _stage(database, job_id, stage, "succeeded"); _log(artifact_dir, "stage_succeeded", stage=stage, elapsed_seconds=round(time.monotonic() - started, 3))
+                wav_path = artifact_dir / "audio-16k-mono.wav"
+                stage = "normalize"; started = time.monotonic(); _stage(database, job_id, stage, "running")
+                if wav_path.is_file() and not force:
+                    print("阶段 1/4 · 复用已有标准化音频")
+                else:
+                    print("阶段 1/4 · 标准化音频")
+                    _, max_volume = normalize_audio(source, wav_path)
+                    _atomic_json(artifact_dir / "source.json", {"path": str(source), "sha256": job_id, "size": source.stat().st_size, "mtime": source.stat().st_mtime, "media": probe, "max_volume_db": max_volume})
+                _stage(database, job_id, stage, "succeeded"); _log(artifact_dir, "stage_succeeded", stage=stage, elapsed_seconds=round(time.monotonic() - started, 3))
                 raw_path = artifact_dir / "transcript.raw.json"
                 stage = "transcribe"; started = time.monotonic(); _stage(database, job_id, stage, "running", json.dumps(settings["transcription"], ensure_ascii=False))
                 if raw_path.is_file() and not force:
-                    print("阶段 1/3 · 复用已有转写")
+                    print("阶段 2/4 · 复用已有转写")
                     try:
                         transcript = json.loads(raw_path.read_text(encoding="utf-8"))
                     except json.JSONDecodeError as error:
                         raise ValueError("转写产物损坏。请执行 retry <job-id> --from transcribe 重新生成。") from error
                 else:
-                    transcript = transcribe(source, settings["transcription"])
+                    transcript = transcribe(wav_path, settings["transcription"])
                 _atomic_json(raw_path, transcript)
                 _stage(database, job_id, stage, "succeeded"); _log(artifact_dir, "stage_succeeded", stage=stage, elapsed_seconds=round(time.monotonic() - started, 3), parameters=settings["transcription"])
                 stage = "diarize"; started = time.monotonic(); _stage(database, job_id, stage, "running", json.dumps(settings["diarization"], ensure_ascii=False))
-                speakers = diarize(source, settings["diarization"])
+                speakers = diarize(wav_path, settings["diarization"])
                 _speaker_names(speakers, artifact_dir / "speaker-map.toml")
                 _atomic_json(artifact_dir / "speakers.json", {"segments": speakers})
                 _render_outputs(artifact_dir, output_dir, output_formats(settings), include_existing=True)

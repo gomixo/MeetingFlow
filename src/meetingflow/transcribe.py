@@ -18,23 +18,23 @@ class TranscriptionSettings(TypedDict):
 _DLL_DIRECTORIES: list[object] = []
 
 
-def transcribe(source: Path, settings: TranscriptionSettings) -> dict[str, object]:
+def transcribe(audio_path: Path, settings: TranscriptionSettings) -> dict[str, object]:
     _register_dll_directories()
     import torch
     import whisperx
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    print("阶段 1/3 · 转写")
+    print("阶段 2/4 · 转写")
     _progress("转写", 0)
     model = whisperx.load_model(settings["model"], device, compute_type=settings["compute_type"], language=settings["language"])
     try:
-        result = model.transcribe(str(source), batch_size=settings["batch_size"], language=settings["language"], progress_callback=lambda percent: _progress("转写", percent))
+        result = model.transcribe(str(audio_path), batch_size=settings["batch_size"], language=settings["language"], progress_callback=lambda percent: _progress("转写", percent))
         _ensure_punkt_tab()
-        print("\n阶段 2/3 · 词级对齐")
+        print("\n阶段 3/4 · 词级对齐")
         _progress("词级对齐", 0)
         align_model, metadata = whisperx.load_align_model(language_code=result["language"], device=device)
         try:
-            aligned = whisperx.align(result["segments"], align_model, metadata, str(source), device, return_char_alignments=False)
+            aligned = whisperx.align(result["segments"], align_model, metadata, str(audio_path), device, return_char_alignments=False)
             _progress("词级对齐", 100)
             return aligned
         finally:

@@ -12,8 +12,6 @@ import pytest
 from meetingflow import audio, pipeline
 from meetingflow.__main__ import _input_path, _latest_media, _menu, _rename_menu
 from meetingflow.audio import probe_audio
-from meetingflow.diarize import _decode_audio
-from meetingflow.transcribe import _register_dll_directories
 
 
 def _settings(tmp_path: Path) -> pipeline.Settings:
@@ -25,9 +23,15 @@ def _settings(tmp_path: Path) -> pipeline.Settings:
 
 
 def _models(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(pipeline, "probe_audio", lambda _: {"format_name": "mp4", "duration_seconds": 2.0, "sample_rate": 48000, "channels": 2, "bit_rate": 128000, "max_volume_db": -3.0, "warnings": []})
+    monkeypatch.setattr(pipeline, "probe_audio", lambda _: {"format_name": "mp4", "duration_seconds": 2.0, "sample_rate": 48000, "channels": 2, "bit_rate": 128000, "warnings": []})
+    monkeypatch.setattr(pipeline, "normalize_audio", _fake_normalize)
     monkeypatch.setattr(pipeline, "transcribe", lambda _source, _settings: {"language": "zh", "segments": [{"start": 0.0, "end": 1.25, "text": " 你好，世界。 "}]})
     monkeypatch.setattr(pipeline, "diarize", lambda _source, _settings: [{"start": 0.0, "end": 1.25, "speaker": "SPEAKER_00"}])
+
+
+def _fake_normalize(_source: Path, destination: Path) -> tuple[Path, float | None]:
+    destination.write_bytes(b"fake-wav")
+    return destination, -3.0
 
 
 def test_process_keeps_only_selected_outputs_and_internal_artifacts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -38,7 +42,7 @@ def test_process_keeps_only_selected_outputs_and_internal_artifacts(tmp_path: Pa
 
     assert not result.skipped
     assert {path.name for path in result.output_dir.iterdir()} == {"speakers.md"}
-    assert {path.name for path in artifact_dir.iterdir()} == {"run.jsonl", "source.json", "speaker-map.toml", "speakers.json", "transcript.raw.json"}
+    assert {path.name for path in artifact_dir.iterdir()} == {"run.jsonl", "source.json", "audio-16k-mono.wav", "speaker-map.toml", "speakers.json", "transcript.raw.json"}
     assert "Speaker 1: 你好，世界。" in (result.output_dir / "speakers.md").read_text(encoding="utf-8")
     assert pipeline.process(source, settings).skipped
 
@@ -147,24 +151,13 @@ def test_run_bat_passes_local_config_when_present() -> None:
     assert "meetingflow @configArgs" in script
 
 
-def test_probe_audio_reads_synthetic_audio_volume(tmp_path: Path) -> None:
+def test_probe_audio_reads_format_without_separate_volume(tmp_path: Path) -> None:
     source = tmp_path / "tone.wav"
     subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "sine=frequency=1000:duration=0.1", str(source)], check=True)
     probe = probe_audio(source)
     assert probe["sample_rate"] == 44100
-    assert probe["max_volume_db"] is not None
+    assert "max_volume_db" not in probe  # 音量检测已合并到 normalize 阶段
     assert "录音时长不足 1 秒" in probe["warnings"]
-
-
-def test_decode_audio_for_diarization_uses_ffmpeg(tmp_path: Path) -> None:
-    source = tmp_path / "tone.mp3"
-    subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "sine=frequency=1000:duration=0.1", str(source)], check=True)
-    _register_dll_directories()
-    import torch
-
-    audio = _decode_audio(source, torch)
-    assert audio["sample_rate"] == 16000
-    assert audio["waveform"].shape[0] == 1
 
 
 def test_open_database_enables_wal_and_busy_timeout(tmp_path: Path) -> None:
@@ -231,16 +224,18 @@ def test_validate_settings_collects_multiple_errors(tmp_path: Path) -> None:
     assert "max_speakers 不能小于" in message
 
 
-def test_max_volume_raises_on_ffmpeg_nonzero_return(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_normalize_audio_raises_on_ffmpeg_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     source = tmp_path / "fake.mp4"
     source.write_bytes(b"x")
+    destination = tmp_path / "out.wav"
 
     def fake_run(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(cmd, returncode=1, stdout="", stderr="Invalid data found")
 
     monkeypatch.setattr(audio.subprocess, "run", fake_run)
     with pytest.raises(ValueError, match="解码失败"):
-        audio._max_volume(source)
+        audio.normalize_audio(source, destination)
+    assert not destination.exists()
 
 
 def test_ensure_ffmpeg_available_raises_when_missing(monkeypatch: pytest.MonkeyPatch) -> None:
