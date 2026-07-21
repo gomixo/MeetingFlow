@@ -13,28 +13,40 @@ class TranscriptionSettings(TypedDict):
     language: str
     compute_type: str
     batch_size: int
+    repetition_penalty: float
+    no_repeat_ngram_size: int
+    chunk_size: int
 
 
 _DLL_DIRECTORIES: list[object] = []
 
 
-def transcribe(source: Path, settings: TranscriptionSettings) -> dict[str, object]:
+def transcribe(audio_path: Path, settings: TranscriptionSettings) -> dict[str, object]:
     _register_dll_directories()
     import torch
     import whisperx
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    print("阶段 1/3 · 转写")
+    print("阶段 2/4 · 转写")
     _progress("转写", 0)
-    model = whisperx.load_model(settings["model"], device, compute_type=settings["compute_type"], language=settings["language"])
+    asr_options = _asr_options(settings)
+    model = whisperx.load_model(
+        settings["model"], device, compute_type=settings["compute_type"], language=settings["language"], asr_options=asr_options
+    )
     try:
-        result = model.transcribe(str(source), batch_size=settings["batch_size"], language=settings["language"], progress_callback=lambda percent: _progress("转写", percent))
+        result = model.transcribe(
+            str(audio_path),
+            batch_size=settings["batch_size"],
+            language=settings["language"],
+            chunk_size=settings["chunk_size"],
+            progress_callback=lambda percent: _progress("转写", percent),
+        )
         _ensure_punkt_tab()
-        print("\n阶段 2/3 · 词级对齐")
+        print("\n阶段 3/4 · 词级对齐")
         _progress("词级对齐", 0)
         align_model, metadata = whisperx.load_align_model(language_code=result["language"], device=device)
         try:
-            aligned = whisperx.align(result["segments"], align_model, metadata, str(source), device, return_char_alignments=False)
+            aligned = whisperx.align(result["segments"], align_model, metadata, str(audio_path), device, return_char_alignments=False)
             _progress("词级对齐", 100)
             return aligned
         finally:
@@ -46,14 +58,21 @@ def transcribe(source: Path, settings: TranscriptionSettings) -> dict[str, objec
             torch.cuda.empty_cache()
 
 
+def _asr_options(settings: TranscriptionSettings) -> dict[str, float | int] | None:
+    """仅当重复惩罚或 ngram 非默认时传 asr_options，避免覆盖 WhisperX 默认值；核听后再固化推荐值。"""
+    if settings["repetition_penalty"] == 1.0 and settings["no_repeat_ngram_size"] == 0:
+        return None
+    return {"repetition_penalty": settings["repetition_penalty"], "no_repeat_ngram_size": settings["no_repeat_ngram_size"]}
+
+
 def _ensure_punkt_tab() -> None:
     import nltk
 
     try:
         nltk.data.find("tokenizers/punkt_tab/english/")
-    except LookupError:
+    except LookupError as error:
         if not nltk.download("punkt_tab", quiet=True, raise_on_error=True):
-            raise RuntimeError("无法下载 WhisperX 对齐所需的 punkt_tab 资源")
+            raise RuntimeError("无法下载 WhisperX 对齐所需的 punkt_tab 资源") from error
 
 
 def _progress(stage: str, percent: float) -> None:

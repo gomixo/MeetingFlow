@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import gc
 import os
-import subprocess
 from pathlib import Path
 from typing import TypedDict
 
@@ -20,22 +19,25 @@ class SpeakerSegment(TypedDict):
     speaker: str
 
 
-def diarize(source: Path, settings: DiarizationSettings) -> list[SpeakerSegment]:
+def diarize(audio_path: Path, settings: DiarizationSettings) -> list[SpeakerSegment]:
     """用本地 pyannote 模型为时间段标记发言人。"""
     _register_dll_directories()
     token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN")
     if not token:
         raise ValueError("未设置 HF_TOKEN。请在 Hugging Face 接受 speaker-diarization-community-1 条款后设置该环境变量。")
-    from pyannote.audio import Pipeline
     import torch
+    import torchaudio
+    from pyannote.audio import Pipeline
 
     pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-community-1", token=token)
     if torch.cuda.is_available():
         pipeline.to(torch.device("cuda"))
     try:
         options = {key: value for key, value in settings.items() if value is not None}
-        print("阶段 3/3 · 说话人识别")
-        output = pipeline(_decode_audio(source, torch), hook=_progress_hook, **options)
+        print("阶段 4/4 · 说话人识别")
+        # 复用 normalize 阶段的 16kHz 单声道 WAV，避免再次 capture_output 整段 PCM 入内存。
+        waveform, sample_rate = torchaudio.load(str(audio_path))
+        output = pipeline({"waveform": waveform, "sample_rate": sample_rate}, hook=_progress_hook, **options)
         annotation = output.speaker_diarization
         return [
             {"start": round(float(turn.start), 3), "end": round(float(turn.end), 3), "speaker": str(label)}
@@ -46,16 +48,6 @@ def diarize(source: Path, settings: DiarizationSettings) -> list[SpeakerSegment]
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-
-
-def _decode_audio(source: Path, torch: object) -> dict[str, object]:
-    # ponytail: 绕过 TorchCodec 对部分 MP3 的解码缺陷，不落地临时 WAV。
-    result = subprocess.run(["ffmpeg", "-v", "error", "-i", str(source), "-vn", "-ac", "1", "-ar", "16000", "-f", "f32le", "pipe:1"], capture_output=True, check=False)
-    if result.returncode != 0 or not result.stdout:
-        detail = result.stderr.decode("utf-8", errors="replace").strip() or "FFmpeg 未提供错误详情"
-        raise ValueError(f"无法为说话人识别解码音频：{detail}")
-    waveform = torch.frombuffer(bytearray(result.stdout), dtype=torch.float32).reshape(1, -1)
-    return {"waveform": waveform, "sample_rate": 16000}
 
 
 def _progress_hook(step_name: str, _artifact: object, file: object = None, total: int | None = None, completed: int | None = None) -> None:
