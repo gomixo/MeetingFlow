@@ -75,7 +75,7 @@ def test_force_refreshes_existing_formats_and_missing_raw_is_rebuilt(tmp_path: P
     pipeline.save_output_formats(settings, ("srt",))
     monkeypatch.setattr(pipeline, "transcribe", lambda _source, _settings: {"segments": [{"start": 0.0, "end": 1.0, "text": "更新内容"}]})
 
-    pipeline.process(source, settings, force=True)
+    pipeline.process(source, settings, start_stage="probe")
     assert "更新内容" in (result.output_dir / "speakers.md").read_text(encoding="utf-8")
     assert "更新内容" in (result.output_dir / "speakers.srt").read_text(encoding="utf-8")
 

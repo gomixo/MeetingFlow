@@ -29,7 +29,7 @@ def main() -> int:
     render_command.add_argument("job_id", help="任务 ID 或其不含歧义的前缀")
     retry_command = commands.add_parser("retry", help="从指定阶段重新处理失败任务")
     retry_command.add_argument("job_id", help="任务 ID 或其不含歧义的前缀")
-    retry_command.add_argument("--from", dest="from_stage", choices=("probe", "transcribe", "diarize"), required=True)
+    retry_command.add_argument("--from", dest="from_stage", choices=("probe", "normalize", "transcribe", "diarize"), required=True)
     arguments = parser.parse_args()
     try:
         settings = load_settings(arguments.config)
@@ -37,7 +37,7 @@ def main() -> int:
         if arguments.command is None:
             _menu(settings)
         elif arguments.command == "process":
-            result = process(arguments.source, settings, arguments.force)
+            result = process(arguments.source, settings, start_stage="probe" if arguments.force else None)
             print(f"任务已成功处理，已跳过：{result.output_dir}" if result.skipped else f"处理完成：{result.output_dir}")
         elif arguments.command == "render":
             print(f"重新渲染完成：{render(arguments.job_id, settings)}")
