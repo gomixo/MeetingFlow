@@ -7,7 +7,8 @@ import warnings
 from datetime import datetime
 from pathlib import Path
 
-from .pipeline import ProcessResult, Settings, completed_jobs, job_speakers, load_settings, output_formats, process, rename_speaker, render, retry, save_output_formats
+from .audio import ensure_ffmpeg_available
+from .pipeline import ProcessResult, Settings, completed_jobs, job_speakers, load_settings, output_formats, process, rename_speaker, render, retry, save_output_formats, wait_until_stable
 
 _MEDIA_SUFFIXES = {".aac", ".flac", ".m4a", ".mka", ".mkv", ".mp3", ".mp4", ".wav", ".webm"}
 
@@ -32,6 +33,7 @@ def main() -> int:
     arguments = parser.parse_args()
     try:
         settings = load_settings(arguments.config)
+        ensure_ffmpeg_available()
         if arguments.command is None:
             _menu(settings)
         elif arguments.command == "process":
@@ -59,6 +61,8 @@ def _menu(settings: Settings) -> None:
             if choice == "1":
                 source = _latest_media(settings["inbox"])
                 print(f"已选择：{source}")
+                print("正在确认文件已写入完成...")
+                wait_until_stable(source)
                 _print_process(process(source, settings))
             elif choice == "2":
                 value = input("请拖入文件或粘贴完整路径：").strip()

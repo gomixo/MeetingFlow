@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import subprocess
+import types
 from pathlib import Path
 
 import pytest
 
-from meetingflow import pipeline
+from meetingflow import audio, pipeline
 from meetingflow.__main__ import _input_path, _latest_media, _menu, _rename_menu
 from meetingflow.audio import probe_audio
 from meetingflow.diarize import _decode_audio
@@ -163,3 +165,114 @@ def test_decode_audio_for_diarization_uses_ffmpeg(tmp_path: Path) -> None:
     audio = _decode_audio(source, torch)
     assert audio["sample_rate"] == 16000
     assert audio["waveform"].shape[0] == 1
+
+
+def test_open_database_enables_wal_and_busy_timeout(tmp_path: Path) -> None:
+    database = pipeline._open_database(tmp_path / "meetingflow.db")
+    try:
+        busy_timeout = database.execute("PRAGMA busy_timeout").fetchone()[0]
+        journal_mode = database.execute("PRAGMA journal_mode").fetchone()[0]
+    finally:
+        database.close()
+
+    assert busy_timeout == 5000
+    assert journal_mode == "wal"
+
+
+def test_load_settings_resolves_relative_paths_against_config_dir(tmp_path: Path) -> None:
+    config = tmp_path / "meetingflow.toml"
+    config.write_text('inbox = "Inbox"\nwork = "Work"\noutput = "Output"\n', encoding="utf-8")
+
+    settings = pipeline.load_settings(config)
+
+    assert settings["inbox"] == (tmp_path / "Inbox").resolve()
+    assert settings["work"] == (tmp_path / "Work").resolve()
+    assert settings["output"] == (tmp_path / "Output").resolve()
+
+
+def test_validate_settings_rejects_overlap_and_bad_values(tmp_path: Path) -> None:
+    base = pipeline.load_settings(None)
+    base["inbox"] = tmp_path / "inbox"
+    base["work"] = tmp_path / "work"
+    base["output"] = tmp_path / "output"
+
+    overlap = {**base, "work": base["inbox"]}
+    with pytest.raises(ValueError, match="互相包含"):
+        pipeline.validate_settings(overlap)
+
+    bad_batch = {**base, "transcription": {**base["transcription"], "batch_size": 0}}
+    with pytest.raises(ValueError, match="batch_size"):
+        pipeline.validate_settings(bad_batch)
+
+    bad_speakers = {**base, "diarization": {"min_speakers": 4, "max_speakers": 2}}
+    with pytest.raises(ValueError, match="max_speakers 不能小于"):
+        pipeline.validate_settings(bad_speakers)
+
+    bad_model = {**base, "transcription": {**base["transcription"], "model": ""}}
+    with pytest.raises(ValueError, match="model 不能为空"):
+        pipeline.validate_settings(bad_model)
+
+
+def test_validate_settings_collects_multiple_errors(tmp_path: Path) -> None:
+    base = pipeline.load_settings(None)
+    base["inbox"] = tmp_path / "inbox"
+    base["work"] = tmp_path / "inbox"  # 与 inbox 重叠
+    base["output"] = tmp_path / "output"
+    base["transcription"] = {**base["transcription"], "batch_size": -1, "model": ""}
+    base["diarization"] = {"min_speakers": 5, "max_speakers": 2}
+
+    with pytest.raises(ValueError) as exc_info:
+        pipeline.validate_settings(base)
+
+    message = str(exc_info.value)
+    assert "互相包含" in message
+    assert "batch_size" in message
+    assert "model 不能为空" in message
+    assert "max_speakers 不能小于" in message
+
+
+def test_max_volume_raises_on_ffmpeg_nonzero_return(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    source = tmp_path / "fake.mp4"
+    source.write_bytes(b"x")
+
+    def fake_run(cmd: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(cmd, returncode=1, stdout="", stderr="Invalid data found")
+
+    monkeypatch.setattr(audio.subprocess, "run", fake_run)
+    with pytest.raises(ValueError, match="解码失败"):
+        audio._max_volume(source)
+
+
+def test_ensure_ffmpeg_available_raises_when_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(audio.shutil, "which", lambda name: None)
+    with pytest.raises(ValueError, match="未找到"):
+        audio.ensure_ffmpeg_available()
+
+
+def test_ensure_ffmpeg_available_passes_when_present(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(audio.shutil, "which", lambda name: f"/usr/bin/{name}")
+    audio.ensure_ffmpeg_available()
+
+
+def test_wait_until_stable_returns_for_stable_file(tmp_path: Path) -> None:
+    source = tmp_path / "stable.wav"
+    source.write_bytes(b"data")
+
+    result = pipeline.wait_until_stable(source, checks=2, interval=0.001, timeout=5)
+
+    assert result == source
+
+
+def test_wait_until_stable_raises_when_file_keeps_changing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    source = tmp_path / "growing.wav"
+    source.write_bytes(b"data")
+    counter = {"n": 0}
+
+    def fake_stat(path: object, **_kwargs: object) -> types.SimpleNamespace:
+        counter["n"] += 1
+        return types.SimpleNamespace(st_size=counter["n"], st_mtime=1.0)
+
+    monkeypatch.setattr(os, "stat", fake_stat)
+
+    with pytest.raises(ValueError, match="仍在变化"):
+        pipeline.wait_until_stable(source, checks=2, interval=0.001, timeout=0.05)

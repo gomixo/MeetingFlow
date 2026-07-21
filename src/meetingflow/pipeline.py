@@ -9,6 +9,8 @@ import tempfile
 import time
 import tomllib
 import traceback
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -48,13 +50,138 @@ def load_settings(path: Path | None) -> Settings:
     if path is not None:
         with path.open("rb") as file:
             values = tomllib.load(file)
+    base = path.resolve().parent if path is not None else None
     section = values.get("transcription", {})
     diarization = values.get("diarization", {})
     if not isinstance(section, dict):
         raise ValueError("配置中的 transcription 必须是表")
     if not isinstance(diarization, dict):
         raise ValueError("配置中的 diarization 必须是表")
-    return {"inbox": Path(str(values.get("inbox", "D:/Meetings/Inbox"))), "work": Path(str(values.get("work", "D:/Meetings/Work"))), "output": Path(str(values.get("output", "D:/Meetings/Output"))), "transcription": {"model": str(section.get("model", "large-v3")), "language": str(section.get("language", "zh")), "compute_type": str(section.get("compute_type", "int8_float16")), "batch_size": int(section.get("batch_size", 4))}, "diarization": {"min_speakers": _optional_int(diarization.get("min_speakers")), "max_speakers": _optional_int(diarization.get("max_speakers"))}}
+    settings: Settings = {
+        "inbox": _resolve_path(str(values.get("inbox", "D:/Meetings/Inbox")), base),
+        "work": _resolve_path(str(values.get("work", "D:/Meetings/Work")), base),
+        "output": _resolve_path(str(values.get("output", "D:/Meetings/Output")), base),
+        "transcription": {
+            "model": str(section.get("model", "large-v3")),
+            "language": str(section.get("language", "zh")),
+            "compute_type": str(section.get("compute_type", "int8_float16")),
+            "batch_size": int(section.get("batch_size", 4)),
+        },
+        "diarization": {
+            "min_speakers": _optional_int(diarization.get("min_speakers")),
+            "max_speakers": _optional_int(diarization.get("max_speakers")),
+        },
+    }
+    validate_settings(settings)
+    return settings
+
+
+def validate_settings(settings: Settings) -> None:
+    """在模型加载前一次性收集并抛出所有配置问题，避免运行很久后才失败。"""
+    errors: list[str] = []
+    inbox, work, output = settings["inbox"], settings["work"], settings["output"]
+    for first, first_name, second, second_name in (
+        (inbox, "inbox", work, "work"),
+        (inbox, "inbox", output, "output"),
+        (work, "work", output, "output"),
+    ):
+        if _is_same_or_ancestor(first, second) or _is_same_or_ancestor(second, first):
+            errors.append(f"{first_name} 与 {second_name} 不能互相包含")
+    transcription = settings["transcription"]
+    if not transcription["model"]:
+        errors.append("transcription.model 不能为空")
+    if not transcription["language"]:
+        errors.append("transcription.language 不能为空")
+    if transcription["batch_size"] <= 0:
+        errors.append("transcription.batch_size 必须大于 0")
+    diarization = settings["diarization"]
+    min_speakers, max_speakers = diarization["min_speakers"], diarization["max_speakers"]
+    if min_speakers is not None and min_speakers <= 0:
+        errors.append("diarization.min_speakers 必须大于 0")
+    if max_speakers is not None and max_speakers <= 0:
+        errors.append("diarization.max_speakers 必须大于 0")
+    if min_speakers is not None and max_speakers is not None and max_speakers < min_speakers:
+        errors.append("diarization.max_speakers 不能小于 min_speakers")
+    if errors:
+        raise ValueError("配置无效：\n- " + "\n- ".join(errors))
+
+
+def _resolve_path(raw: str, base: Path | None) -> Path:
+    """绝对路径原样返回；相对路径相对配置文件目录解析；无配置文件时相对当前工作目录。"""
+    path = Path(raw).expanduser()
+    if path.is_absolute() or base is None:
+        return path
+    return (base / path).resolve()
+
+
+def _is_same_or_ancestor(parent: Path, child: Path) -> bool:
+    try:
+        child.resolve().relative_to(parent.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+@contextmanager
+def _file_lock(path: Path, busy_message: str) -> Iterator[None]:
+    """独占文件锁：O_EXCL 创建，进程崩溃残留时按 PID 检测回收。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor = _acquire_lock_file(path, busy_message)
+    try:
+        os.write(descriptor, str(os.getpid()).encode("ascii"))
+        yield
+    finally:
+        os.close(descriptor)
+        path.unlink(missing_ok=True)
+
+
+def _acquire_lock_file(path: Path, busy_message: str) -> int:
+    try:
+        return os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        pass
+    if _is_stale_lock(path):
+        path.unlink(missing_ok=True)
+        try:
+            return os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError as error:
+            raise ValueError(busy_message) from error
+    raise ValueError(busy_message)
+
+
+def _is_stale_lock(path: Path) -> bool:
+    try:
+        pid = int(path.read_text(encoding="ascii").strip())
+    except (OSError, ValueError):
+        return True
+    return not _pid_exists(pid)
+
+
+def _pid_exists(pid: int) -> bool:
+    if os.name == "nt":
+        return _pid_exists_windows(pid)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _pid_exists_windows(pid: int) -> bool:
+    import ctypes
+
+    handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
+    if not handle:
+        return False
+    try:
+        exit_code = ctypes.c_ulong()
+        if not ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+            return False
+        return exit_code.value == 259  # STILL_ACTIVE
+    finally:
+        ctypes.windll.kernel32.CloseHandle(handle)
 
 
 def process(source: Path, settings: Settings, force: bool = False) -> ProcessResult:
@@ -64,52 +191,91 @@ def process(source: Path, settings: Settings, force: bool = False) -> ProcessRes
     print(f"\n开始处理：{source.name}")
     job_id = _sha256(source)
     settings["work"].mkdir(parents=True, exist_ok=True)
-    database = _open_database(settings["work"] / "meetingflow.db")
-    try:
-        existing = database.execute("SELECT status, output_dir FROM jobs WHERE id = ?", (job_id,)).fetchone()
-        output_dir = Path(existing[1]) if existing is not None else _output_dir(settings["output"], source, job_id)
-        artifact_dir = _artifact_dir(job_id, output_dir, settings)
-        reusable = all((artifact_dir / name).is_file() for name in ("transcript.raw.json", "speakers.json"))
-        if existing is not None and existing[0] == "succeeded" and not force and reusable:
-            _render_outputs(artifact_dir, output_dir, output_formats(settings), include_existing=True)
-            _job(database, job_id, source, output_dir, "succeeded")
-            _log(artifact_dir, "job_skipped", job_id=job_id)
-            return ProcessResult(job_id, output_dir, True)
-        output_dir.mkdir(parents=True, exist_ok=True)
-        artifact_dir.mkdir(parents=True, exist_ok=True)
-        _job(database, job_id, source, output_dir, "running")
-        _log(artifact_dir, "job_started", job_id=job_id)
-        stage = "probe"
+    with _file_lock(settings["work"] / ".gpu.lock", "另一个 MeetingFlow 正在运行，请等待其完成或关闭后重试。"), _file_lock(settings["work"] / f".lock-{job_id}", "该任务正由另一个 MeetingFlow 处理。"):
+        database = _open_database(settings["work"] / "meetingflow.db")
         try:
-            started = time.monotonic(); _stage(database, job_id, stage, "running")
-            probe = probe_audio(source)
-            _atomic_json(artifact_dir / "source.json", {"path": str(source), "sha256": job_id, "size": source.stat().st_size, "mtime": source.stat().st_mtime, "media": probe})
-            _stage(database, job_id, stage, "succeeded"); _log(artifact_dir, "stage_succeeded", stage=stage, elapsed_seconds=round(time.monotonic() - started, 3))
-            raw_path = artifact_dir / "transcript.raw.json"
-            stage = "transcribe"; started = time.monotonic(); _stage(database, job_id, stage, "running", json.dumps(settings["transcription"], ensure_ascii=False))
-            if raw_path.is_file() and not force:
-                print("阶段 1/3 · 复用已有转写")
-                try:
-                    transcript = json.loads(raw_path.read_text(encoding="utf-8"))
-                except json.JSONDecodeError as error:
-                    raise ValueError("转写产物损坏。请执行 retry <job-id> --from transcribe 重新生成。") from error
-            else:
-                transcript = transcribe(source, settings["transcription"])
-            _atomic_json(raw_path, transcript)
-            _stage(database, job_id, stage, "succeeded"); _log(artifact_dir, "stage_succeeded", stage=stage, elapsed_seconds=round(time.monotonic() - started, 3), parameters=settings["transcription"])
-            stage = "diarize"; started = time.monotonic(); _stage(database, job_id, stage, "running", json.dumps(settings["diarization"], ensure_ascii=False))
-            speakers = diarize(source, settings["diarization"])
-            _speaker_names(speakers, artifact_dir / "speaker-map.toml")
-            _atomic_json(artifact_dir / "speakers.json", {"segments": speakers})
-            _render_outputs(artifact_dir, output_dir, output_formats(settings), include_existing=True)
-            _stage(database, job_id, stage, "succeeded"); _log(artifact_dir, "stage_succeeded", stage=stage, elapsed_seconds=round(time.monotonic() - started, 3), parameters=settings["diarization"])
-        except Exception:
-            _stage(database, job_id, stage, "failed"); _job(database, job_id, source, output_dir, "failed"); _log(artifact_dir, "job_failed", job_id=job_id, stage=stage, traceback=traceback.format_exc())
-            raise
-        _job(database, job_id, source, output_dir, "succeeded"); _log(artifact_dir, "job_succeeded", job_id=job_id)
-        return ProcessResult(job_id, output_dir, False)
-    finally:
-        database.close()
+            existing = database.execute("SELECT status, output_dir FROM jobs WHERE id = ?", (job_id,)).fetchone()
+            output_dir = Path(existing[1]) if existing is not None else _output_dir(settings["output"], source, job_id)
+            artifact_dir = _artifact_dir(job_id, output_dir, settings)
+            reusable = all((artifact_dir / name).is_file() for name in ("transcript.raw.json", "speakers.json"))
+            if existing is not None and existing[0] == "succeeded" and not force and reusable:
+                _render_outputs(artifact_dir, output_dir, output_formats(settings), include_existing=True)
+                _job(database, job_id, source, output_dir, "succeeded")
+                _log(artifact_dir, "job_skipped", job_id=job_id)
+                return ProcessResult(job_id, output_dir, True)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            artifact_dir.mkdir(parents=True, exist_ok=True)
+            _job(database, job_id, source, output_dir, "running")
+            _log(artifact_dir, "job_started", job_id=job_id)
+            stage = "probe"
+            try:
+                started = time.monotonic(); _stage(database, job_id, stage, "running")
+                probe = probe_audio(source)
+                _atomic_json(artifact_dir / "source.json", {"path": str(source), "sha256": job_id, "size": source.stat().st_size, "mtime": source.stat().st_mtime, "media": probe})
+                _stage(database, job_id, stage, "succeeded"); _log(artifact_dir, "stage_succeeded", stage=stage, elapsed_seconds=round(time.monotonic() - started, 3))
+                raw_path = artifact_dir / "transcript.raw.json"
+                stage = "transcribe"; started = time.monotonic(); _stage(database, job_id, stage, "running", json.dumps(settings["transcription"], ensure_ascii=False))
+                if raw_path.is_file() and not force:
+                    print("阶段 1/3 · 复用已有转写")
+                    try:
+                        transcript = json.loads(raw_path.read_text(encoding="utf-8"))
+                    except json.JSONDecodeError as error:
+                        raise ValueError("转写产物损坏。请执行 retry <job-id> --from transcribe 重新生成。") from error
+                else:
+                    transcript = transcribe(source, settings["transcription"])
+                _atomic_json(raw_path, transcript)
+                _stage(database, job_id, stage, "succeeded"); _log(artifact_dir, "stage_succeeded", stage=stage, elapsed_seconds=round(time.monotonic() - started, 3), parameters=settings["transcription"])
+                stage = "diarize"; started = time.monotonic(); _stage(database, job_id, stage, "running", json.dumps(settings["diarization"], ensure_ascii=False))
+                speakers = diarize(source, settings["diarization"])
+                _speaker_names(speakers, artifact_dir / "speaker-map.toml")
+                _atomic_json(artifact_dir / "speakers.json", {"segments": speakers})
+                _render_outputs(artifact_dir, output_dir, output_formats(settings), include_existing=True)
+                _stage(database, job_id, stage, "succeeded"); _log(artifact_dir, "stage_succeeded", stage=stage, elapsed_seconds=round(time.monotonic() - started, 3), parameters=settings["diarization"])
+            except Exception:
+                _stage(database, job_id, stage, "failed"); _job(database, job_id, source, output_dir, "failed"); _log(artifact_dir, "job_failed", job_id=job_id, stage=stage, traceback=traceback.format_exc())
+                raise
+            _job(database, job_id, source, output_dir, "succeeded"); _log(artifact_dir, "job_succeeded", job_id=job_id)
+            return ProcessResult(job_id, output_dir, False)
+        finally:
+            database.close()
+
+
+def wait_until_stable(source: Path, *, checks: int = 3, interval: float = 1.0, timeout: float = 60.0) -> Path:
+    """连续检查文件大小和修改时间是否稳定，避免处理 OBS 仍在写入的文件。"""
+    deadline = time.monotonic() + timeout
+    previous = _stat_tuple(source)
+    stable_count = 0
+    while time.monotonic() < deadline:
+        time.sleep(interval)
+        current = _stat_tuple(source)
+        if current == previous:
+            stable_count += 1
+            if stable_count >= checks:
+                _assert_not_writable(source)
+                return source
+        else:
+            stable_count = 0
+        previous = current
+    raise ValueError(f"文件仍在变化，可能仍在录制：{source}")
+
+
+def _stat_tuple(source: Path) -> tuple[int, float]:
+    try:
+        stat = source.stat()
+    except OSError as error:
+        raise ValueError(f"无法读取文件状态：{source}") from error
+    return stat.st_size, stat.st_mtime
+
+
+def _assert_not_writable(source: Path) -> None:
+    # Windows 下若 OBS 仍持有写句柄，以写方式打开会触发共享冲突；其他平台跳过该检查。
+    if os.name != "nt":
+        return
+    try:
+        descriptor = os.open(str(source), os.O_WRONLY | os.O_APPEND | getattr(os, "O_BINARY", 0))
+    except OSError as error:
+        raise ValueError(f"文件被其他进程占用，可能仍在录制：{source}") from error
+    os.close(descriptor)
 
 
 def render(job_id: str, settings: Settings) -> Path:
@@ -229,6 +395,10 @@ def _render_outputs(artifact_dir: Path, output_dir: Path, formats: tuple[str, ..
 def _open_database(path: Path) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     database = sqlite3.connect(path)
+    # busy_timeout 让并发连接短暂等待而非立即抛 database is locked；
+    # WAL 降低读写互斥，避免多进程读日志时阻塞写入。
+    database.execute("PRAGMA busy_timeout = 5000")
+    database.execute("PRAGMA journal_mode = WAL")
     database.execute("CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, source_path TEXT NOT NULL, output_dir TEXT NOT NULL, status TEXT NOT NULL)")
     database.execute("CREATE TABLE IF NOT EXISTS stages (job_id TEXT NOT NULL, name TEXT NOT NULL, status TEXT NOT NULL, parameters TEXT, updated_at TEXT NOT NULL, PRIMARY KEY (job_id, name))")
     database.commit(); return database
