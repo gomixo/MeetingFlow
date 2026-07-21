@@ -40,7 +40,14 @@ def probe_audio(source: Path) -> AudioProbe:
     warnings: list[str] = []
     if duration < 1:
         warnings.append("录音时长不足 1 秒")
-    return {"format_name": str(payload["format"].get("format_name", "unknown")), "duration_seconds": duration, "sample_rate": sample_rate, "channels": channels, "bit_rate": _as_int(payload["format"].get("bit_rate")), "warnings": warnings}
+    return {
+        "format_name": str(payload["format"].get("format_name", "unknown")),
+        "duration_seconds": duration,
+        "sample_rate": sample_rate,
+        "channels": channels,
+        "bit_rate": _as_int(payload["format"].get("bit_rate")),
+        "warnings": warnings,
+    }
 
 
 def normalize_audio(source: Path, destination: Path) -> tuple[Path, float | None]:
@@ -51,7 +58,25 @@ def normalize_audio(source: Path, destination: Path) -> tuple[Path, float | None
     """
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_name(f".{destination.name}.tmp")
-    command = ["ffmpeg", "-y", "-hide_banner", "-i", str(source), "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_f32le", "-af", "volumedetect", "-f", "wav", str(temporary)]
+    command = [
+        "ffmpeg",
+        "-y",
+        "-hide_banner",
+        "-i",
+        str(source),
+        "-vn",
+        "-ac",
+        "1",
+        "-ar",
+        "16000",
+        "-c:a",
+        "pcm_f32le",
+        "-af",
+        "volumedetect",
+        "-f",
+        "wav",
+        str(temporary),
+    ]
     result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", check=False)
     if result.returncode != 0:
         temporary.unlink(missing_ok=True)

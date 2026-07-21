@@ -65,7 +65,9 @@ uv run meetingflow --config config/meetingflow.toml render <job-id>
 为了支持改名、重渲染、去重和失败恢复，以下内部文件保存在 `Work/jobs/<sha256>/`：
 
 - `source.json`：源文件路径、哈希和媒体信息；
+- `audio-16k-mono.wav`：标准化后的 16kHz 单声道中间音频，转写与说话人识别复用；
 - `transcript.raw.json`：模型原始转写；
+- `transcript.aligned.json`：词级说话人分配后的转写，渲染时按词级边界拆分行；
 - `speakers.json`：说话人时间段；
 - `speaker-map.toml`：说话人标签与姓名映射；
 - `run.jsonl`：阶段、参数、耗时和错误日志。
@@ -75,6 +77,7 @@ uv run meetingflow --config config/meetingflow.toml render <job-id>
 ## 数据原则
 
 - 原始录音只读，不覆盖、不删除。
-- 模型任务串行执行，避免 RTX 4060 8GB 显存被同时占用。
+- 模型任务串行执行，进程锁落实单 GPU 串行，避免 RTX 4060 8GB 显存被同时占用。
+- 阶段产物按参数指纹复用：模型、语言、说话人数等参数变化时只重跑受影响阶段及下游。
 - 不提交真实会议录音、访问令牌、模型缓存、本机配置或运行数据。
 - Agent 开发约束见 [AGENTS.md](AGENTS.md)，详细设计见 [docs/V1-详细开发方案.md](docs/V1-详细开发方案.md)。

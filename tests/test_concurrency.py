@@ -23,9 +23,8 @@ def test_file_lock_rejects_when_held_by_live_process(tmp_path: Path, monkeypatch
     lock_path.write_text("99999", encoding="ascii")
     monkeypatch.setattr(pipeline, "_pid_exists", lambda pid: True)
 
-    with pytest.raises(ValueError, match="另一个"):
-        with pipeline._file_lock(lock_path, "另一个进程占用"):
-            pass
+    with pytest.raises(ValueError, match="另一个"), pipeline._file_lock(lock_path, "另一个进程占用"):
+        pass
 
 
 def test_file_lock_reclaims_stale_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

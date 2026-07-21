@@ -25,9 +25,9 @@ def diarize(audio_path: Path, settings: DiarizationSettings) -> list[SpeakerSegm
     token = os.environ.get("HF_TOKEN") or os.environ.get("HUGGINGFACE_TOKEN")
     if not token:
         raise ValueError("未设置 HF_TOKEN。请在 Hugging Face 接受 speaker-diarization-community-1 条款后设置该环境变量。")
+    import torch
     import torchaudio
     from pyannote.audio import Pipeline
-    import torch
 
     pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-community-1", token=token)
     if torch.cuda.is_available():

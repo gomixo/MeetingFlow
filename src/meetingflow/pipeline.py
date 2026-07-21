@@ -66,6 +66,9 @@ def load_settings(path: Path | None) -> Settings:
             "language": str(section.get("language", "zh")),
             "compute_type": str(section.get("compute_type", "int8_float16")),
             "batch_size": int(section.get("batch_size", 4)),
+            "repetition_penalty": float(section.get("repetition_penalty", 1.0)),
+            "no_repeat_ngram_size": int(section.get("no_repeat_ngram_size", 0)),
+            "chunk_size": int(section.get("chunk_size", 30)),
         },
         "diarization": {
             "min_speakers": _optional_int(diarization.get("min_speakers")),
@@ -196,11 +199,24 @@ def _normalize_fingerprint() -> str:
 
 
 def _transcription_fingerprint(settings: TranscriptionSettings) -> str:
-    return _fingerprint({"model": settings["model"], "language": settings["language"], "compute_type": settings["compute_type"], "batch_size": settings["batch_size"]})
+    return _fingerprint(
+        {
+            "model": settings["model"],
+            "language": settings["language"],
+            "compute_type": settings["compute_type"],
+            "batch_size": settings["batch_size"],
+        }
+    )
 
 
 def _diarization_fingerprint(settings: DiarizationSettings) -> str:
-    return _fingerprint({"model": "pyannote/speaker-diarization-community-1", "min_speakers": settings["min_speakers"], "max_speakers": settings["max_speakers"]})
+    return _fingerprint(
+        {
+            "model": "pyannote/speaker-diarization-community-1",
+            "min_speakers": settings["min_speakers"],
+            "max_speakers": settings["max_speakers"],
+        }
+    )
 
 
 def _fingerprint(payload: dict[str, object]) -> str:
@@ -213,7 +229,10 @@ def _read_fingerprint(database: sqlite3.Connection, job_id: str, stage: str) -> 
 
 
 def _write_fingerprint(database: sqlite3.Connection, job_id: str, stage: str, fingerprint: str) -> None:
-    database.execute("INSERT INTO stage_fingerprints VALUES (?, ?, ?) ON CONFLICT(job_id, name) DO UPDATE SET fingerprint=excluded.fingerprint", (job_id, stage, fingerprint))
+    database.execute(
+        "INSERT INTO stage_fingerprints VALUES (?, ?, ?) ON CONFLICT(job_id, name) DO UPDATE SET fingerprint=excluded.fingerprint",
+        (job_id, stage, fingerprint),
+    )
     database.commit()
 
 
@@ -230,9 +249,7 @@ def _should_rerun(stage: str, start_stage: str | None, rerun_active: bool, artif
         return True
     if not artifact_exists:
         return True
-    if not fingerprint_match:
-        return True
-    return False
+    return not fingerprint_match
 
 
 def _all_fingerprints_match(database: sqlite3.Connection, job_id: str, settings: Settings) -> bool:
@@ -253,14 +270,23 @@ def process(source: Path, settings: Settings, start_stage: str | None = None) ->
     print(f"\n开始处理：{source.name}")
     job_id = _sha256(source)
     settings["work"].mkdir(parents=True, exist_ok=True)
-    with _file_lock(settings["work"] / ".gpu.lock", "另一个 MeetingFlow 正在运行，请等待其完成或关闭后重试。"), _file_lock(settings["work"] / f".lock-{job_id}", "该任务正由另一个 MeetingFlow 处理。"):
+    with (
+        _file_lock(settings["work"] / ".gpu.lock", "另一个 MeetingFlow 正在运行，请等待其完成或关闭后重试。"),
+        _file_lock(settings["work"] / f".lock-{job_id}", "该任务正由另一个 MeetingFlow 处理。"),
+    ):
         database = _open_database(settings["work"] / "meetingflow.db")
         try:
             existing = database.execute("SELECT status, output_dir FROM jobs WHERE id = ?", (job_id,)).fetchone()
             output_dir = Path(existing[1]) if existing is not None else _output_dir(settings["output"], source, job_id)
             artifact_dir = _artifact_dir(job_id, output_dir, settings)
             reusable = all((artifact_dir / name).is_file() for name in ("transcript.raw.json", "speakers.json"))
-            if existing is not None and existing[0] == "succeeded" and start_stage is None and reusable and _all_fingerprints_match(database, job_id, settings):
+            if (
+                existing is not None
+                and existing[0] == "succeeded"
+                and start_stage is None
+                and reusable
+                and _all_fingerprints_match(database, job_id, settings)
+            ):
                 _render_outputs(artifact_dir, output_dir, output_formats(settings), include_existing=True)
                 _job(database, job_id, source, output_dir, "succeeded")
                 _log(artifact_dir, "job_skipped", job_id=job_id)
@@ -273,32 +299,76 @@ def process(source: Path, settings: Settings, start_stage: str | None = None) ->
             stage = "probe"
             try:
                 source_path = artifact_dir / "source.json"
-                started = time.monotonic(); _stage(database, job_id, stage, "running")
-                if _should_rerun(stage, start_stage, rerun_active, source_path.is_file(), _fingerprint_matches(database, job_id, stage, _probe_fingerprint())):
+                started = time.monotonic()
+                _stage(database, job_id, stage, "running")
+                if _should_rerun(
+                    stage,
+                    start_stage,
+                    rerun_active,
+                    source_path.is_file(),
+                    _fingerprint_matches(database, job_id, stage, _probe_fingerprint()),
+                ):
                     rerun_active = True
                     probe = probe_audio(source)
-                    _atomic_json(source_path, {"path": str(source), "sha256": job_id, "size": source.stat().st_size, "mtime": source.stat().st_mtime, "media": probe})
+                    _atomic_json(
+                        source_path,
+                        {
+                            "path": str(source),
+                            "sha256": job_id,
+                            "size": source.stat().st_size,
+                            "mtime": source.stat().st_mtime,
+                            "media": probe,
+                        },
+                    )
                 else:
                     print("阶段 0/4 · 复用媒体探测")
                     probe = json.loads(source_path.read_text(encoding="utf-8")).get("media")
                     if not isinstance(probe, dict):
                         raise ValueError("媒体探测产物损坏。请执行 retry <job-id> --from probe 重新生成。")
                 _write_fingerprint(database, job_id, stage, _probe_fingerprint())
-                _stage(database, job_id, stage, "succeeded"); _log(artifact_dir, "stage_succeeded", stage=stage, elapsed_seconds=round(time.monotonic() - started, 3))
+                _stage(database, job_id, stage, "succeeded")
+                _log(artifact_dir, "stage_succeeded", stage=stage, elapsed_seconds=round(time.monotonic() - started, 3))
                 wav_path = artifact_dir / "audio-16k-mono.wav"
-                stage = "normalize"; started = time.monotonic(); _stage(database, job_id, stage, "running")
-                if _should_rerun(stage, start_stage, rerun_active, wav_path.is_file(), _fingerprint_matches(database, job_id, stage, _normalize_fingerprint())):
+                stage = "normalize"
+                started = time.monotonic()
+                _stage(database, job_id, stage, "running")
+                if _should_rerun(
+                    stage,
+                    start_stage,
+                    rerun_active,
+                    wav_path.is_file(),
+                    _fingerprint_matches(database, job_id, stage, _normalize_fingerprint()),
+                ):
                     rerun_active = True
                     print("阶段 1/4 · 标准化音频")
                     _, max_volume = normalize_audio(source, wav_path)
-                    _atomic_json(source_path, {"path": str(source), "sha256": job_id, "size": source.stat().st_size, "mtime": source.stat().st_mtime, "media": probe, "max_volume_db": max_volume})
+                    _atomic_json(
+                        source_path,
+                        {
+                            "path": str(source),
+                            "sha256": job_id,
+                            "size": source.stat().st_size,
+                            "mtime": source.stat().st_mtime,
+                            "media": probe,
+                            "max_volume_db": max_volume,
+                        },
+                    )
                 else:
                     print("阶段 1/4 · 复用已有标准化音频")
                 _write_fingerprint(database, job_id, stage, _normalize_fingerprint())
-                _stage(database, job_id, stage, "succeeded"); _log(artifact_dir, "stage_succeeded", stage=stage, elapsed_seconds=round(time.monotonic() - started, 3))
+                _stage(database, job_id, stage, "succeeded")
+                _log(artifact_dir, "stage_succeeded", stage=stage, elapsed_seconds=round(time.monotonic() - started, 3))
                 raw_path = artifact_dir / "transcript.raw.json"
-                stage = "transcribe"; started = time.monotonic(); _stage(database, job_id, stage, "running", json.dumps(settings["transcription"], ensure_ascii=False))
-                if _should_rerun(stage, start_stage, rerun_active, raw_path.is_file(), _fingerprint_matches(database, job_id, stage, _transcription_fingerprint(settings["transcription"]))):
+                stage = "transcribe"
+                started = time.monotonic()
+                _stage(database, job_id, stage, "running", json.dumps(settings["transcription"], ensure_ascii=False))
+                if _should_rerun(
+                    stage,
+                    start_stage,
+                    rerun_active,
+                    raw_path.is_file(),
+                    _fingerprint_matches(database, job_id, stage, _transcription_fingerprint(settings["transcription"])),
+                ):
                     rerun_active = True
                     transcript = transcribe(wav_path, settings["transcription"])
                 else:
@@ -309,10 +379,25 @@ def process(source: Path, settings: Settings, start_stage: str | None = None) ->
                         raise ValueError("转写产物损坏。请执行 retry <job-id> --from transcribe 重新生成。") from error
                 _atomic_json(raw_path, transcript)
                 _write_fingerprint(database, job_id, stage, _transcription_fingerprint(settings["transcription"]))
-                _stage(database, job_id, stage, "succeeded"); _log(artifact_dir, "stage_succeeded", stage=stage, elapsed_seconds=round(time.monotonic() - started, 3), parameters=settings["transcription"])
+                _stage(database, job_id, stage, "succeeded")
+                _log(
+                    artifact_dir,
+                    "stage_succeeded",
+                    stage=stage,
+                    elapsed_seconds=round(time.monotonic() - started, 3),
+                    parameters=settings["transcription"],
+                )
                 speakers_path = artifact_dir / "speakers.json"
-                stage = "diarize"; started = time.monotonic(); _stage(database, job_id, stage, "running", json.dumps(settings["diarization"], ensure_ascii=False))
-                if _should_rerun(stage, start_stage, rerun_active, speakers_path.is_file(), _fingerprint_matches(database, job_id, stage, _diarization_fingerprint(settings["diarization"]))):
+                stage = "diarize"
+                started = time.monotonic()
+                _stage(database, job_id, stage, "running", json.dumps(settings["diarization"], ensure_ascii=False))
+                if _should_rerun(
+                    stage,
+                    start_stage,
+                    rerun_active,
+                    speakers_path.is_file(),
+                    _fingerprint_matches(database, job_id, stage, _diarization_fingerprint(settings["diarization"])),
+                ):
                     rerun_active = True
                     speakers = diarize(wav_path, settings["diarization"])
                     _speaker_names(speakers, artifact_dir / "speaker-map.toml")
@@ -326,11 +411,21 @@ def process(source: Path, settings: Settings, start_stage: str | None = None) ->
                     _atomic_json(aligned_path, transcript)
                 _render_outputs(artifact_dir, output_dir, output_formats(settings), include_existing=True)
                 _write_fingerprint(database, job_id, stage, _diarization_fingerprint(settings["diarization"]))
-                _stage(database, job_id, stage, "succeeded"); _log(artifact_dir, "stage_succeeded", stage=stage, elapsed_seconds=round(time.monotonic() - started, 3), parameters=settings["diarization"])
+                _stage(database, job_id, stage, "succeeded")
+                _log(
+                    artifact_dir,
+                    "stage_succeeded",
+                    stage=stage,
+                    elapsed_seconds=round(time.monotonic() - started, 3),
+                    parameters=settings["diarization"],
+                )
             except Exception:
-                _stage(database, job_id, stage, "failed"); _job(database, job_id, source, output_dir, "failed"); _log(artifact_dir, "job_failed", job_id=job_id, stage=stage, traceback=traceback.format_exc())
+                _stage(database, job_id, stage, "failed")
+                _job(database, job_id, source, output_dir, "failed")
+                _log(artifact_dir, "job_failed", job_id=job_id, stage=stage, traceback=traceback.format_exc())
                 raise
-            _job(database, job_id, source, output_dir, "succeeded"); _log(artifact_dir, "job_succeeded", job_id=job_id)
+            _job(database, job_id, source, output_dir, "succeeded")
+            _log(artifact_dir, "job_succeeded", job_id=job_id)
             return ProcessResult(job_id, output_dir, False)
         finally:
             database.close()
@@ -394,7 +489,8 @@ def completed_jobs(settings: Settings) -> list[JobSummary]:
 
 
 def job_speakers(job_id: str, settings: Settings) -> list[tuple[str, str]]:
-    full_job_id, output_dir = _find_job(job_id, settings); artifact_dir = _artifact_dir(full_job_id, output_dir, settings)
+    full_job_id, output_dir = _find_job(job_id, settings)
+    artifact_dir = _artifact_dir(full_job_id, output_dir, settings)
     speakers = _read_speakers(artifact_dir)
     return list(_speaker_names(speakers, artifact_dir / "speaker-map.toml").items())
 
@@ -403,8 +499,10 @@ def rename_speaker(job_id: str, label: str, name: str, settings: Settings) -> Pa
     name = name.strip()
     if not name:
         raise ValueError("发言人姓名不能为空")
-    full_job_id, output_dir = _find_job(job_id, settings); artifact_dir = _artifact_dir(full_job_id, output_dir, settings)
-    speakers = _read_speakers(artifact_dir); names = _speaker_names(speakers, artifact_dir / "speaker-map.toml")
+    full_job_id, output_dir = _find_job(job_id, settings)
+    artifact_dir = _artifact_dir(full_job_id, output_dir, settings)
+    speakers = _read_speakers(artifact_dir)
+    names = _speaker_names(speakers, artifact_dir / "speaker-map.toml")
     if label not in names:
         raise ValueError("任务中不存在该发言人")
     names[label] = name
@@ -498,7 +596,8 @@ def _render_outputs(artifact_dir: Path, output_dir: Path, formats: tuple[str, ..
     transcript = _load_transcript(artifact_dir)
     if not isinstance(transcript, dict):
         raise ValueError("任务的转写产物格式异常")
-    speakers = _read_speakers(artifact_dir); names = _speaker_names(speakers, artifact_dir / "speaker-map.toml")
+    speakers = _read_speakers(artifact_dir)
+    names = _speaker_names(speakers, artifact_dir / "speaker-map.toml")
     selected = set(formats)
     if include_existing:
         selected.update(suffix for suffix in ("md", "srt") if (output_dir / f"speakers.{suffix}").is_file())
@@ -526,24 +625,40 @@ def _open_database(path: Path) -> sqlite3.Connection:
     # WAL 降低读写互斥，避免多进程读日志时阻塞写入。
     database.execute("PRAGMA busy_timeout = 5000")
     database.execute("PRAGMA journal_mode = WAL")
-    database.execute("CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, source_path TEXT NOT NULL, output_dir TEXT NOT NULL, status TEXT NOT NULL)")
-    database.execute("CREATE TABLE IF NOT EXISTS stages (job_id TEXT NOT NULL, name TEXT NOT NULL, status TEXT NOT NULL, parameters TEXT, updated_at TEXT NOT NULL, PRIMARY KEY (job_id, name))")
-    database.execute("CREATE TABLE IF NOT EXISTS stage_fingerprints (job_id TEXT NOT NULL, name TEXT NOT NULL, fingerprint TEXT NOT NULL, PRIMARY KEY (job_id, name))")
-    database.commit(); return database
+    database.execute(
+        "CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, source_path TEXT NOT NULL, output_dir TEXT NOT NULL, status TEXT NOT NULL)"
+    )
+    database.execute(
+        "CREATE TABLE IF NOT EXISTS stages (job_id TEXT NOT NULL, name TEXT NOT NULL, status TEXT NOT NULL, parameters TEXT, updated_at TEXT NOT NULL, PRIMARY KEY (job_id, name))"
+    )
+    database.execute(
+        "CREATE TABLE IF NOT EXISTS stage_fingerprints (job_id TEXT NOT NULL, name TEXT NOT NULL, fingerprint TEXT NOT NULL, PRIMARY KEY (job_id, name))"
+    )
+    database.commit()
+    return database
 
 
 def _job(database: sqlite3.Connection, job_id: str, source: Path, output_dir: Path, status: str) -> None:
-    database.execute("INSERT INTO jobs VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET source_path=excluded.source_path, output_dir=excluded.output_dir, status=excluded.status", (job_id, str(source), str(output_dir), status)); database.commit()
+    database.execute(
+        "INSERT INTO jobs VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET source_path=excluded.source_path, output_dir=excluded.output_dir, status=excluded.status",
+        (job_id, str(source), str(output_dir), status),
+    )
+    database.commit()
 
 
 def _stage(database: sqlite3.Connection, job_id: str, name: str, status: str, parameters: str | None = None) -> None:
-    database.execute("INSERT INTO stages VALUES (?, ?, ?, ?, ?) ON CONFLICT(job_id, name) DO UPDATE SET status=excluded.status, parameters=COALESCE(excluded.parameters, stages.parameters), updated_at=excluded.updated_at", (job_id, name, status, parameters, datetime.now(UTC).isoformat())); database.commit()
+    database.execute(
+        "INSERT INTO stages VALUES (?, ?, ?, ?, ?) ON CONFLICT(job_id, name) DO UPDATE SET status=excluded.status, parameters=COALESCE(excluded.parameters, stages.parameters), updated_at=excluded.updated_at",
+        (job_id, name, status, parameters, datetime.now(UTC).isoformat()),
+    )
+    database.commit()
 
 
 def _sha256(source: Path) -> str:
     digest = hashlib.sha256()
     with source.open("rb") as file:
-        while chunk := file.read(1024 * 1024): digest.update(chunk)
+        while chunk := file.read(1024 * 1024):
+            digest.update(chunk)
     return digest.hexdigest()
 
 
@@ -566,7 +681,11 @@ def _speaker_names(speakers: list[SpeakerSegment], path: Path) -> dict[str, str]
 
 
 def _write_speaker_names(path: Path, names: dict[str, str]) -> None:
-    lines = ["[speakers]", *(f"{json.dumps(label, ensure_ascii=False)} = {json.dumps(name, ensure_ascii=False)}" for label, name in names.items()), ""]
+    lines = [
+        "[speakers]",
+        *(f"{json.dumps(label, ensure_ascii=False)} = {json.dumps(name, ensure_ascii=False)}" for label, name in names.items()),
+        "",
+    ]
     _atomic_text(path, "\n".join(lines))
 
 
@@ -592,10 +711,12 @@ def _atomic_json(path: Path, payload: object) -> None:
 def _atomic_text(path: Path, content: str) -> None:
     descriptor, temporary = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", text=True)
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as file: file.write(content)
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as file:
+            file.write(content)
         Path(temporary).replace(path)
     except Exception:
-        Path(temporary).unlink(missing_ok=True); raise
+        Path(temporary).unlink(missing_ok=True)
+        raise
 
 
 def _log(output_dir: Path, event: str, **fields: object) -> None:

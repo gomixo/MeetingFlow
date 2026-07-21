@@ -8,7 +8,20 @@ from datetime import datetime
 from pathlib import Path
 
 from .audio import ensure_ffmpeg_available
-from .pipeline import ProcessResult, Settings, completed_jobs, job_speakers, load_settings, output_formats, process, rename_speaker, render, retry, save_output_formats, wait_until_stable
+from .pipeline import (
+    ProcessResult,
+    Settings,
+    completed_jobs,
+    job_speakers,
+    load_settings,
+    output_formats,
+    process,
+    rename_speaker,
+    render,
+    retry,
+    save_output_formats,
+    wait_until_stable,
+)
 
 _MEDIA_SUFFIXES = {".aac", ".flac", ".m4a", ".mka", ".mkv", ".mp3", ".mp4", ".wav", ".webm"}
 
@@ -19,12 +32,18 @@ def main() -> int:
     logging.getLogger("lightning.pytorch.utilities.migration").setLevel(logging.WARNING)
     warnings.filterwarnings("ignore", message=".*TensorFloat-32.*", category=UserWarning)
     warnings.filterwarnings("ignore", message=".*degrees of freedom.*", category=UserWarning)
-    warnings.filterwarnings("ignore", message="Passing `gradient_checkpointing` to a config initialization is deprecated.*", category=UserWarning, module=r"transformers\.configuration_utils")
+    warnings.filterwarnings(
+        "ignore",
+        message="Passing `gradient_checkpointing` to a config initialization is deprecated.*",
+        category=UserWarning,
+        module=r"transformers\.configuration_utils",
+    )
     parser = argparse.ArgumentParser(prog="meetingflow", description="本地会议音频转写")
     parser.add_argument("--config", type=Path, help="TOML 配置文件路径")
     commands = parser.add_subparsers(dest="command")
     command = commands.add_parser("process", help="处理一个已完成写入的音频或视频文件")
-    command.add_argument("source", type=Path); command.add_argument("--force", action="store_true", help="即使已成功处理也重新执行")
+    command.add_argument("source", type=Path)
+    command.add_argument("--force", action="store_true", help="即使已成功处理也重新执行")
     render_command = commands.add_parser("render", help="应用 speaker-map.toml 重新生成发言人转写")
     render_command.add_argument("job_id", help="任务 ID 或其不含歧义的前缀")
     retry_command = commands.add_parser("retry", help="从指定阶段重新处理失败任务")
@@ -47,13 +66,16 @@ def main() -> int:
         return 0
     except Exception:
         logging.getLogger(__name__).exception("处理失败")
-        print("处理失败。请查看 Work/jobs 中的 run.jsonl 和控制台错误。", file=sys.stderr); return 1
+        print("处理失败。请查看 Work/jobs 中的 run.jsonl 和控制台错误。", file=sys.stderr)
+        return 1
 
 
 def _menu(settings: Settings) -> None:
     while True:
         formats = "+".join(item.upper() for item in output_formats(settings))
-        print(f"\nMeetingFlow（当前输出：{formats}）\n1. 转写 Inbox 中最新文件\n2. 转写拖入或粘贴的文件\n3. 修改发言人姓名\n4. 设置输出格式\n0. 退出")
+        print(
+            f"\nMeetingFlow（当前输出：{formats}）\n1. 转写 Inbox 中最新文件\n2. 转写拖入或粘贴的文件\n3. 修改发言人姓名\n4. 设置输出格式\n0. 退出"
+        )
         choice = input("请选择：").strip()
         if choice == "0":
             return
@@ -167,4 +189,5 @@ def _print_process(result: ProcessResult) -> None:
     print(f"任务已成功处理，已跳过：{result.output_dir}" if result.skipped else f"处理完成：{result.output_dir}")
 
 
-if __name__ == "__main__": raise SystemExit(main())
+if __name__ == "__main__":
+    raise SystemExit(main())

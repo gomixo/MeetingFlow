@@ -17,7 +17,9 @@ def test_normalize_audio_produces_16k_mono_wav(tmp_path: Path) -> None:
     assert result_path == destination
     assert destination.is_file()
     assert max_volume is not None
-    probe = subprocess.run(["ffprobe", "-v", "error", "-show_streams", "-of", "json", str(destination)], capture_output=True, text=True, check=True)
+    probe = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_streams", "-of", "json", str(destination)], capture_output=True, text=True, check=True
+    )
     stream = json.loads(probe.stdout)["streams"][0]
     assert stream["sample_rate"] == "16000"
     assert stream["channels"] == 1

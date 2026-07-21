@@ -7,8 +7,17 @@ model = "large-v3"
 language = "zh"
 compute_type = "int8_float16"
 batch_size = 4
+# 以下参数用于控制重复幻觉，默认值保持当前行为；建议用代表性片段 A/B 核听后再固化。
+# repetition_penalty = 1.1
+# no_repeat_ngram_size = 3
+# chunk_size = 20
 
 [diarization]
 # 可选：仅在已知人数时设置，能提高区分稳定性。
 # min_speakers = 2
 # max_speakers = 4
+
+# 离线模式与隐私：建议在用户环境变量中设置（不要写入本文件或仓库）：
+#   HF_HUB_OFFLINE=1
+#   TRANSFORMERS_OFFLINE=1
+#   PYANNOTE_METRICS_ENABLED=0

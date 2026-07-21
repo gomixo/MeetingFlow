@@ -23,9 +23,17 @@ def _settings(tmp_path: Path) -> pipeline.Settings:
 
 
 def _models(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(pipeline, "probe_audio", lambda _: {"format_name": "mp4", "duration_seconds": 2.0, "sample_rate": 48000, "channels": 2, "bit_rate": 128000, "warnings": []})
+    monkeypatch.setattr(
+        pipeline,
+        "probe_audio",
+        lambda _: {"format_name": "mp4", "duration_seconds": 2.0, "sample_rate": 48000, "channels": 2, "bit_rate": 128000, "warnings": []},
+    )
     monkeypatch.setattr(pipeline, "normalize_audio", _fake_normalize)
-    monkeypatch.setattr(pipeline, "transcribe", lambda _source, _settings: {"language": "zh", "segments": [{"start": 0.0, "end": 1.25, "text": " 你好，世界。 "}]})
+    monkeypatch.setattr(
+        pipeline,
+        "transcribe",
+        lambda _source, _settings: {"language": "zh", "segments": [{"start": 0.0, "end": 1.25, "text": " 你好，世界。 "}]},
+    )
     monkeypatch.setattr(pipeline, "diarize", lambda _source, _settings: [{"start": 0.0, "end": 1.25, "speaker": "SPEAKER_00"}])
 
 
@@ -35,25 +43,38 @@ def _fake_normalize(_source: Path, destination: Path) -> tuple[Path, float | Non
 
 
 def test_process_keeps_only_selected_outputs_and_internal_artifacts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    source = tmp_path / "会议 录音.mp4"; source.write_bytes(b"synthetic-audio")
-    settings = _settings(tmp_path); _models(monkeypatch)
+    source = tmp_path / "会议 录音.mp4"
+    source.write_bytes(b"synthetic-audio")
+    settings = _settings(tmp_path)
+    _models(monkeypatch)
     result = pipeline.process(source, settings)
     artifact_dir = settings["work"] / "jobs" / result.job_id
 
     assert not result.skipped
     assert {path.name for path in result.output_dir.iterdir()} == {"speakers.md"}
-    assert {path.name for path in artifact_dir.iterdir()} == {"run.jsonl", "source.json", "audio-16k-mono.wav", "speaker-map.toml", "speakers.json", "transcript.raw.json", "transcript.aligned.json"}
+    assert {path.name for path in artifact_dir.iterdir()} == {
+        "run.jsonl",
+        "source.json",
+        "audio-16k-mono.wav",
+        "speaker-map.toml",
+        "speakers.json",
+        "transcript.raw.json",
+        "transcript.aligned.json",
+    }
     assert "Speaker 1: 你好，世界。" in (result.output_dir / "speakers.md").read_text(encoding="utf-8")
     assert pipeline.process(source, settings).skipped
 
-    moved = tmp_path / "已归档.mp4"; source.rename(moved)
+    moved = tmp_path / "已归档.mp4"
+    source.rename(moved)
     assert pipeline.process(moved, settings).skipped
     assert pipeline.completed_jobs(settings)[0].source == moved.resolve()
 
 
 def test_formats_and_chinese_speaker_name_rerender_markdown_and_srt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    source = tmp_path / "中文会议.mp4"; source.write_bytes(b"another-audio")
-    settings = _settings(tmp_path); _models(monkeypatch)
+    source = tmp_path / "中文会议.mp4"
+    source.write_bytes(b"another-audio")
+    settings = _settings(tmp_path)
+    _models(monkeypatch)
     pipeline.save_output_formats(settings, ("srt",))
     result = pipeline.process(source, settings)
 
@@ -69,8 +90,10 @@ def test_formats_and_chinese_speaker_name_rerender_markdown_and_srt(tmp_path: Pa
 
 
 def test_force_refreshes_existing_formats_and_missing_raw_is_rebuilt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    source = tmp_path / "重跑会议.mp4"; source.write_bytes(b"retry-audio")
-    settings = _settings(tmp_path); _models(monkeypatch)
+    source = tmp_path / "重跑会议.mp4"
+    source.write_bytes(b"retry-audio")
+    settings = _settings(tmp_path)
+    _models(monkeypatch)
     result = pipeline.process(source, settings)
     pipeline.save_output_formats(settings, ("srt",))
     monkeypatch.setattr(pipeline, "transcribe", lambda _source, _settings: {"segments": [{"start": 0.0, "end": 1.0, "text": "更新内容"}]})
@@ -86,14 +109,22 @@ def test_force_refreshes_existing_formats_and_missing_raw_is_rebuilt(tmp_path: P
 
 
 def test_render_supports_legacy_flat_job_with_id_prefix(tmp_path: Path) -> None:
-    settings = _settings(tmp_path); settings["work"].mkdir(parents=True)
-    output_dir = settings["output"] / "legacy"; output_dir.mkdir(parents=True)
-    job_id = "a" * 64; source = tmp_path / "旧会议.mp4"; source.write_bytes(b"old")
-    (output_dir / "transcript.raw.json").write_text(json.dumps({"segments": [{"start": 0, "end": 1, "text": "旧内容"}]}, ensure_ascii=False), encoding="utf-8")
+    settings = _settings(tmp_path)
+    settings["work"].mkdir(parents=True)
+    output_dir = settings["output"] / "legacy"
+    output_dir.mkdir(parents=True)
+    job_id = "a" * 64
+    source = tmp_path / "旧会议.mp4"
+    source.write_bytes(b"old")
+    (output_dir / "transcript.raw.json").write_text(
+        json.dumps({"segments": [{"start": 0, "end": 1, "text": "旧内容"}]}, ensure_ascii=False), encoding="utf-8"
+    )
     (output_dir / "speakers.json").write_text(json.dumps({"segments": [{"start": 0, "end": 1, "speaker": "SPEAKER_00"}]}), encoding="utf-8")
     (output_dir / "speaker-map.toml").write_text('[speakers]\n"SPEAKER_00" = "李四"\n', encoding="utf-8")
     with sqlite3.connect(settings["work"] / "meetingflow.db") as database:
-        database.execute("CREATE TABLE jobs (id TEXT PRIMARY KEY, source_path TEXT NOT NULL, output_dir TEXT NOT NULL, status TEXT NOT NULL)")
+        database.execute(
+            "CREATE TABLE jobs (id TEXT PRIMARY KEY, source_path TEXT NOT NULL, output_dir TEXT NOT NULL, status TEXT NOT NULL)"
+        )
         database.execute("INSERT INTO jobs VALUES (?, ?, ?, 'succeeded')", (job_id, str(source), str(output_dir)))
 
     assert pipeline.render(job_id[:8], settings) == output_dir
@@ -101,11 +132,16 @@ def test_render_supports_legacy_flat_job_with_id_prefix(tmp_path: Path) -> None:
 
 
 def test_latest_media_and_dragged_path(tmp_path: Path) -> None:
-    inbox = tmp_path / "inbox"; inbox.mkdir()
-    older = inbox / "旧.mp3"; older.write_bytes(b"1")
-    ignored = inbox / "说明.txt"; ignored.write_text("newer", encoding="utf-8")
-    newer = inbox / "新.mka"; newer.write_bytes(b"2")
-    older.touch(); newer.touch()
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    older = inbox / "旧.mp3"
+    older.write_bytes(b"1")
+    ignored = inbox / "说明.txt"
+    ignored.write_text("newer", encoding="utf-8")
+    newer = inbox / "新.mka"
+    newer.write_bytes(b"2")
+    older.touch()
+    newer.touch()
     assert _latest_media(inbox) == newer
     assert _input_path(f'"{newer}"') == newer
     with pytest.raises(ValueError, match="没有输入"):
@@ -122,13 +158,21 @@ def test_menu_rejects_invalid_choice_and_exits(tmp_path: Path, monkeypatch: pyte
     assert "无效选项" in capsys.readouterr().err
 
 
-def test_rename_menu_stays_in_submenus_until_zero(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
-    source = tmp_path / "多人会议.mp4"; source.write_bytes(b"speakers-audio")
-    settings = _settings(tmp_path); _models(monkeypatch)
-    monkeypatch.setattr(pipeline, "diarize", lambda _source, _settings: [
-        {"start": 0.0, "end": 1.0, "speaker": "SPEAKER_00"},
-        {"start": 1.0, "end": 2.0, "speaker": "SPEAKER_01"},
-    ])
+def test_rename_menu_stays_in_submenus_until_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    source = tmp_path / "多人会议.mp4"
+    source.write_bytes(b"speakers-audio")
+    settings = _settings(tmp_path)
+    _models(monkeypatch)
+    monkeypatch.setattr(
+        pipeline,
+        "diarize",
+        lambda _source, _settings: [
+            {"start": 0.0, "end": 1.0, "speaker": "SPEAKER_00"},
+            {"start": 1.0, "end": 2.0, "speaker": "SPEAKER_01"},
+        ],
+    )
     result = pipeline.process(source, settings)
     choices = iter(["x", "1", "9", "1", "", "1", "张三", "2", "李四", "0", "0"])
     monkeypatch.setattr("builtins.input", lambda _: next(choices))
@@ -271,3 +315,33 @@ def test_wait_until_stable_raises_when_file_keeps_changing(tmp_path: Path, monke
 
     with pytest.raises(ValueError, match="仍在变化"):
         pipeline.wait_until_stable(source, checks=2, interval=0.001, timeout=0.05)
+
+
+def test_asr_options_none_for_defaults() -> None:
+    from meetingflow.transcribe import _asr_options
+
+    settings = {
+        "model": "large-v3",
+        "language": "zh",
+        "compute_type": "int8_float16",
+        "batch_size": 4,
+        "repetition_penalty": 1.0,
+        "no_repeat_ngram_size": 0,
+        "chunk_size": 30,
+    }
+    assert _asr_options(settings) is None
+
+
+def test_asr_options_passed_when_repetition_penalty_changed() -> None:
+    from meetingflow.transcribe import _asr_options
+
+    settings = {
+        "model": "large-v3",
+        "language": "zh",
+        "compute_type": "int8_float16",
+        "batch_size": 4,
+        "repetition_penalty": 1.1,
+        "no_repeat_ngram_size": 3,
+        "chunk_size": 20,
+    }
+    assert _asr_options(settings) == {"repetition_penalty": 1.1, "no_repeat_ngram_size": 3}

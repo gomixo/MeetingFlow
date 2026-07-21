@@ -13,6 +13,9 @@ class TranscriptionSettings(TypedDict):
     language: str
     compute_type: str
     batch_size: int
+    repetition_penalty: float
+    no_repeat_ngram_size: int
+    chunk_size: int
 
 
 _DLL_DIRECTORIES: list[object] = []
@@ -28,7 +31,15 @@ def transcribe(audio_path: Path, settings: TranscriptionSettings) -> dict[str, o
     _progress("转写", 0)
     model = whisperx.load_model(settings["model"], device, compute_type=settings["compute_type"], language=settings["language"])
     try:
-        result = model.transcribe(str(audio_path), batch_size=settings["batch_size"], language=settings["language"], progress_callback=lambda percent: _progress("转写", percent))
+        asr_options = _asr_options(settings)
+        result = model.transcribe(
+            str(audio_path),
+            batch_size=settings["batch_size"],
+            language=settings["language"],
+            chunk_size=settings["chunk_size"],
+            asr_options=asr_options,
+            progress_callback=lambda percent: _progress("转写", percent),
+        )
         _ensure_punkt_tab()
         print("\n阶段 3/4 · 词级对齐")
         _progress("词级对齐", 0)
@@ -46,14 +57,21 @@ def transcribe(audio_path: Path, settings: TranscriptionSettings) -> dict[str, o
             torch.cuda.empty_cache()
 
 
+def _asr_options(settings: TranscriptionSettings) -> dict[str, float | int] | None:
+    """仅当重复惩罚或 ngram 非默认时传 asr_options，避免覆盖 WhisperX 默认值；核听后再固化推荐值。"""
+    if settings["repetition_penalty"] == 1.0 and settings["no_repeat_ngram_size"] == 0:
+        return None
+    return {"repetition_penalty": settings["repetition_penalty"], "no_repeat_ngram_size": settings["no_repeat_ngram_size"]}
+
+
 def _ensure_punkt_tab() -> None:
     import nltk
 
     try:
         nltk.data.find("tokenizers/punkt_tab/english/")
-    except LookupError:
+    except LookupError as error:
         if not nltk.download("punkt_tab", quiet=True, raise_on_error=True):
-            raise RuntimeError("无法下载 WhisperX 对齐所需的 punkt_tab 资源")
+            raise RuntimeError("无法下载 WhisperX 对齐所需的 punkt_tab 资源") from error
 
 
 def _progress(stage: str, percent: float) -> None:
