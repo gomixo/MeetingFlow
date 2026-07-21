@@ -22,6 +22,7 @@ config/meetingflow.toml
 /Inbox/
 /Work/
 /Output/
+/对比测试/
 /data/
 /models/
 /cache/
