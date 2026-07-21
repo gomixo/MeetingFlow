@@ -42,7 +42,7 @@ def test_process_keeps_only_selected_outputs_and_internal_artifacts(tmp_path: Pa
 
     assert not result.skipped
     assert {path.name for path in result.output_dir.iterdir()} == {"speakers.md"}
-    assert {path.name for path in artifact_dir.iterdir()} == {"run.jsonl", "source.json", "audio-16k-mono.wav", "speaker-map.toml", "speakers.json", "transcript.raw.json"}
+    assert {path.name for path in artifact_dir.iterdir()} == {"run.jsonl", "source.json", "audio-16k-mono.wav", "speaker-map.toml", "speakers.json", "transcript.raw.json", "transcript.aligned.json"}
     assert "Speaker 1: 你好，世界。" in (result.output_dir / "speakers.md").read_text(encoding="utf-8")
     assert pipeline.process(source, settings).skipped
 

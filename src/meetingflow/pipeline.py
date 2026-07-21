@@ -319,6 +319,11 @@ def process(source: Path, settings: Settings, start_stage: str | None = None) ->
                     _atomic_json(speakers_path, {"segments": speakers})
                 else:
                     print("阶段 3/4 · 复用已有说话人识别")
+                speakers = _read_speakers(artifact_dir)
+                aligned_path = artifact_dir / "transcript.aligned.json"
+                if rerun_active or not aligned_path.is_file():
+                    transcript = _assign_word_speakers(transcript, speakers)
+                    _atomic_json(aligned_path, transcript)
                 _render_outputs(artifact_dir, output_dir, output_formats(settings), include_existing=True)
                 _write_fingerprint(database, job_id, stage, _diarization_fingerprint(settings["diarization"]))
                 _stage(database, job_id, stage, "succeeded"); _log(artifact_dir, "stage_succeeded", stage=stage, elapsed_seconds=round(time.monotonic() - started, 3), parameters=settings["diarization"])
@@ -467,9 +472,30 @@ def _read_speakers(artifact_dir: Path) -> list[SpeakerSegment]:
     return [item for item in payload["segments"] if isinstance(item, dict) and {"start", "end", "speaker"} <= item.keys()]
 
 
+def _assign_word_speakers(transcript: dict[str, object], speakers: list[SpeakerSegment]) -> dict[str, object]:
+    """按词级时间戳为每个词分配说话人，等价于 WhisperX assign_word_speakers，但基于 list[SpeakerSegment] 避免 pyannote Annotation 依赖。"""
+    segments = transcript.get("segments")
+    if not isinstance(segments, list):
+        return transcript
+    for segment in segments:
+        if not isinstance(segment, dict):
+            continue
+        words = segment.get("words")
+        if not isinstance(words, list):
+            continue
+        for word in words:
+            if isinstance(word, dict) and "start" in word and "end" in word:
+                word["speaker"] = _speaker_for_word(float(word["start"]), float(word["end"]), speakers)
+    return transcript
+
+
+def _speaker_for_word(start: float, end: float, speakers: list[SpeakerSegment]) -> str | None:
+    best = max(speakers, key=lambda item: max(0.0, min(end, item["end"]) - max(start, item["start"])), default=None)
+    return best["speaker"] if best is not None and min(end, best["end"]) > max(start, best["start"]) else None
+
+
 def _render_outputs(artifact_dir: Path, output_dir: Path, formats: tuple[str, ...], include_existing: bool = False) -> None:
-    with (artifact_dir / "transcript.raw.json").open("r", encoding="utf-8") as file:
-        transcript = json.load(file)
+    transcript = _load_transcript(artifact_dir)
     if not isinstance(transcript, dict):
         raise ValueError("任务的转写产物格式异常")
     speakers = _read_speakers(artifact_dir); names = _speaker_names(speakers, artifact_dir / "speaker-map.toml")
@@ -481,6 +507,16 @@ def _render_outputs(artifact_dir: Path, output_dir: Path, formats: tuple[str, ..
         _atomic_text(output_dir / "speakers.md", render_speakers_markdown(transcript, speakers, names))
     if "srt" in selected:
         _atomic_text(output_dir / "speakers.srt", render_speakers_srt(transcript, speakers, names))
+
+
+def _load_transcript(artifact_dir: Path) -> dict[str, object]:
+    """优先读词级说话人分配后的 aligned，缺失时回退到 raw。"""
+    aligned = artifact_dir / "transcript.aligned.json"
+    if aligned.is_file():
+        with aligned.open("r", encoding="utf-8") as file:
+            return json.load(file)
+    with (artifact_dir / "transcript.raw.json").open("r", encoding="utf-8") as file:
+        return json.load(file)
 
 
 def _open_database(path: Path) -> sqlite3.Connection:
