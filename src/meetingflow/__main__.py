@@ -37,6 +37,7 @@ def main() -> int:
         category=UserWarning,
         module=r"transformers\.configuration_utils",
     )
+    warnings.filterwarnings("ignore", message="The given buffer is not writable.*", category=UserWarning)
     parser = argparse.ArgumentParser(prog="meetingflow", description="本地会议音频转写")
     parser.add_argument("--config", type=Path, help="TOML 配置文件路径")
     commands = parser.add_subparsers(dest="command")

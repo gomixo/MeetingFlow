@@ -390,3 +390,37 @@ def test_validate_settings_rejects_bad_transcription_params(tmp_path: Path) -> N
     assert "chunk_size" in message
     assert "repetition_penalty" in message
     assert "no_repeat_ngram_size" in message
+
+
+def test_load_waveform_decodes_wav_to_float32(tmp_path: Path) -> None:
+    source = tmp_path / "tone.wav"
+    subprocess.run(
+        [
+            "ffmpeg",
+            "-v",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=1000:duration=0.1",
+            "-ac",
+            "1",
+            "-ar",
+            "16000",
+            "-c:a",
+            "pcm_f32le",
+            str(source),
+        ],
+        check=True,
+    )
+    from meetingflow.diarize import _load_waveform
+    from meetingflow.transcribe import _register_dll_directories
+
+    _register_dll_directories()
+    import torch
+
+    waveform = _load_waveform(source, torch)
+
+    assert waveform.shape[0] == 1
+    assert waveform.dtype == torch.float32
+    assert waveform.shape[1] > 0
