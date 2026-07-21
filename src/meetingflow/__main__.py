@@ -7,7 +7,6 @@ import warnings
 from datetime import datetime
 from pathlib import Path
 
-from .audio import ensure_ffmpeg_available
 from .pipeline import (
     ProcessResult,
     Settings,
@@ -52,7 +51,6 @@ def main() -> int:
     arguments = parser.parse_args()
     try:
         settings = load_settings(arguments.config)
-        ensure_ffmpeg_available()
         if arguments.command is None:
             _menu(settings)
         elif arguments.command == "process":

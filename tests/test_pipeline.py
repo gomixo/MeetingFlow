@@ -345,3 +345,48 @@ def test_asr_options_passed_when_repetition_penalty_changed() -> None:
         "chunk_size": 20,
     }
     assert _asr_options(settings) == {"repetition_penalty": 1.1, "no_repeat_ngram_size": 3}
+
+
+def test_skip_rebuilds_aligned_when_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _settings(tmp_path)
+    _models(monkeypatch)
+    source = tmp_path / "aligned会议.mp4"
+    source.write_bytes(b"data")
+    result = pipeline.process(source, settings)
+    artifact_dir = settings["work"] / "jobs" / result.job_id
+    aligned = artifact_dir / "transcript.aligned.json"
+    assert aligned.is_file()
+    aligned.unlink()
+
+    second = pipeline.process(source, settings)
+
+    assert second.skipped
+    assert aligned.is_file()
+
+
+def test_render_works_without_ffmpeg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _settings(tmp_path)
+    _models(monkeypatch)
+    source = tmp_path / "render会议.mp4"
+    source.write_bytes(b"data")
+    result = pipeline.process(source, settings)
+
+    monkeypatch.setattr(audio.shutil, "which", lambda name: None)
+    # render 不经过 process，不应受 FFmpeg 可用性影响
+    pipeline.render(result.job_id[:8], settings)
+
+
+def test_validate_settings_rejects_bad_transcription_params(tmp_path: Path) -> None:
+    base = pipeline.load_settings(None)
+    base["inbox"] = tmp_path / "inbox"
+    base["work"] = tmp_path / "work"
+    base["output"] = tmp_path / "output"
+    bad = {**base, "transcription": {**base["transcription"], "chunk_size": 0, "repetition_penalty": -1, "no_repeat_ngram_size": -1}}
+
+    with pytest.raises(ValueError) as exc_info:
+        pipeline.validate_settings(bad)
+
+    message = str(exc_info.value)
+    assert "chunk_size" in message
+    assert "repetition_penalty" in message
+    assert "no_repeat_ngram_size" in message

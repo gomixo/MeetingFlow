@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TypedDict
 
-from .audio import normalize_audio, probe_audio
+from .audio import ensure_ffmpeg_available, normalize_audio, probe_audio
 from .diarize import DiarizationSettings, SpeakerSegment, diarize
 from .render import render_speakers_markdown, render_speakers_srt
 from .transcribe import TranscriptionSettings, transcribe
@@ -97,6 +97,12 @@ def validate_settings(settings: Settings) -> None:
         errors.append("transcription.language 不能为空")
     if transcription["batch_size"] <= 0:
         errors.append("transcription.batch_size 必须大于 0")
+    if transcription["repetition_penalty"] <= 0:
+        errors.append("transcription.repetition_penalty 必须大于 0")
+    if transcription["no_repeat_ngram_size"] < 0:
+        errors.append("transcription.no_repeat_ngram_size 不能为负数")
+    if transcription["chunk_size"] <= 0:
+        errors.append("transcription.chunk_size 必须大于 0")
     diarization = settings["diarization"]
     min_speakers, max_speakers = diarization["min_speakers"], diarization["max_speakers"]
     if min_speakers is not None and min_speakers <= 0:
@@ -152,11 +158,19 @@ def _acquire_lock_file(path: Path, busy_message: str) -> int:
     raise ValueError(busy_message)
 
 
+_STALE_LOCK_SECONDS: float = 5.0
+
+
 def _is_stale_lock(path: Path) -> bool:
     try:
         pid = int(path.read_text(encoding="ascii").strip())
     except (OSError, ValueError):
-        return True
+        # 空锁可能是刚创建尚未写 PID 的窗口；新锁视为占用，旧锁视为残留。
+        try:
+            age = time.time() - path.stat().st_mtime
+        except OSError:
+            return False
+        return age > _STALE_LOCK_SECONDS
     return not _pid_exists(pid)
 
 
@@ -205,6 +219,9 @@ def _transcription_fingerprint(settings: TranscriptionSettings) -> str:
             "language": settings["language"],
             "compute_type": settings["compute_type"],
             "batch_size": settings["batch_size"],
+            "repetition_penalty": settings["repetition_penalty"],
+            "no_repeat_ngram_size": settings["no_repeat_ngram_size"],
+            "chunk_size": settings["chunk_size"],
         }
     )
 
@@ -238,8 +255,8 @@ def _write_fingerprint(database: sqlite3.Connection, job_id: str, stage: str, fi
 
 def _fingerprint_matches(database: sqlite3.Connection, job_id: str, stage: str, current: str) -> bool:
     stored = _read_fingerprint(database, job_id, stage)
-    # stored 为 None 表示旧任务未记录指纹，视为兼容复用，不破坏已成功任务。
-    return stored is None or stored == current
+    # 缺失指纹视为未验证，重跑该阶段，避免静默复用未知参数的旧结果。
+    return stored is not None and stored == current
 
 
 def _should_rerun(stage: str, start_stage: str | None, rerun_active: bool, artifact_exists: bool, fingerprint_match: bool) -> bool:
@@ -264,16 +281,14 @@ def _all_fingerprints_match(database: sqlite3.Connection, job_id: str, settings:
 def process(source: Path, settings: Settings, start_stage: str | None = None) -> ProcessResult:
     if start_stage is not None and start_stage not in _STAGE_ORDER:
         raise ValueError(f"start_stage 只能是 {', '.join(_STAGE_ORDER)} 之一")
+    ensure_ffmpeg_available()
     source = source.expanduser().resolve()
     if not source.is_file():
         raise ValueError(f"找不到输入文件：{source}")
     print(f"\n开始处理：{source.name}")
     job_id = _sha256(source)
     settings["work"].mkdir(parents=True, exist_ok=True)
-    with (
-        _file_lock(settings["work"] / ".gpu.lock", "另一个 MeetingFlow 正在运行，请等待其完成或关闭后重试。"),
-        _file_lock(settings["work"] / f".lock-{job_id}", "该任务正由另一个 MeetingFlow 处理。"),
-    ):
+    with _file_lock(settings["work"] / ".gpu.lock", "另一个 MeetingFlow 正在运行，请等待其完成或关闭后重试。"):
         database = _open_database(settings["work"] / "meetingflow.db")
         try:
             existing = database.execute("SELECT status, output_dir FROM jobs WHERE id = ?", (job_id,)).fetchone()
@@ -287,6 +302,7 @@ def process(source: Path, settings: Settings, start_stage: str | None = None) ->
                 and reusable
                 and _all_fingerprints_match(database, job_id, settings)
             ):
+                _rebuild_aligned_if_missing(artifact_dir)
                 _render_outputs(artifact_dir, output_dir, output_formats(settings), include_existing=True)
                 _job(database, job_id, source, output_dir, "succeeded")
                 _log(artifact_dir, "job_skipped", job_id=job_id)
@@ -616,6 +632,19 @@ def _load_transcript(artifact_dir: Path) -> dict[str, object]:
             return json.load(file)
     with (artifact_dir / "transcript.raw.json").open("r", encoding="utf-8") as file:
         return json.load(file)
+
+
+def _rebuild_aligned_if_missing(artifact_dir: Path) -> None:
+    """整体复用前若词级产物缺失，用 raw + speakers 重建，避免静默退回段级渲染。"""
+    aligned_path = artifact_dir / "transcript.aligned.json"
+    if aligned_path.is_file():
+        return
+    with (artifact_dir / "transcript.raw.json").open("r", encoding="utf-8") as file:
+        transcript = json.load(file)
+    if not isinstance(transcript, dict):
+        raise ValueError("任务的转写产物格式异常")
+    speakers = _read_speakers(artifact_dir)
+    _atomic_json(aligned_path, _assign_word_speakers(transcript, speakers))
 
 
 def _open_database(path: Path) -> sqlite3.Connection:

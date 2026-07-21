@@ -97,3 +97,44 @@ def test_retry_from_transcribe_reruns_transcribe_and_diarize(tmp_path: Path, mon
     result = pipeline.process(source, settings)
     pipeline.retry(result.job_id, "transcribe", settings)
     assert calls == {"probe": 1, "normalize": 1, "transcribe": 2, "diarize": 2}
+
+
+@pytest.mark.parametrize(
+    "param,value",
+    [("repetition_penalty", 1.2), ("no_repeat_ngram_size", 3), ("chunk_size", 20)],
+)
+def test_new_transcription_param_change_reruns_transcribe_and_downstream(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, param: str, value: object
+) -> None:
+    settings = _settings(tmp_path)
+    calls = {"probe": 0, "normalize": 0, "transcribe": 0, "diarize": 0}
+    _install_models(monkeypatch, calls)
+    source = tmp_path / "meeting.mp4"
+    source.write_bytes(b"data")
+
+    pipeline.process(source, settings)
+    settings["transcription"][param] = value
+    pipeline.process(source, settings)
+    assert calls == {"probe": 1, "normalize": 1, "transcribe": 2, "diarize": 2}
+
+
+def test_legacy_job_without_fingerprint_is_not_reused(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _settings(tmp_path)
+    calls = {"probe": 0, "normalize": 0, "transcribe": 0, "diarize": 0}
+    _install_models(monkeypatch, calls)
+    source = tmp_path / "meeting.mp4"
+    source.write_bytes(b"data")
+
+    result = pipeline.process(source, settings)
+    # 清除指纹，模拟无指纹旧任务
+    database = pipeline._open_database(settings["work"] / "meetingflow.db")
+    database.execute("DELETE FROM stage_fingerprints WHERE job_id = ?", (result.job_id,))
+    database.commit()
+    database.close()
+
+    for key in calls:
+        calls[key] = 0
+    pipeline.process(source, settings)
+    # 无指纹视为未验证，转写与说话人必须重跑
+    assert calls["transcribe"] == 1
+    assert calls["diarize"] == 1

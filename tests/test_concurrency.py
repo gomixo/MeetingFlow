@@ -52,3 +52,18 @@ def test_process_rejects_when_global_lock_held(tmp_path: Path, monkeypatch: pyte
 
     with pytest.raises(ValueError, match="另一个 MeetingFlow 正在运行"):
         pipeline.process(source, settings)
+
+
+def test_empty_recent_lock_not_treated_as_stale(tmp_path: Path) -> None:
+    lock_path = tmp_path / "recent.lock"
+    lock_path.write_bytes(b"")
+    # 刚创建的空锁在窗口内视为占用，不回收
+    assert pipeline._is_stale_lock(lock_path) is False
+
+
+def test_empty_old_lock_treated_as_stale(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    lock_path = tmp_path / "old.lock"
+    lock_path.write_bytes(b"")
+    mtime = lock_path.stat().st_mtime
+    monkeypatch.setattr(pipeline.time, "time", lambda: mtime + 100)
+    assert pipeline._is_stale_lock(lock_path) is True

@@ -29,15 +29,16 @@ def transcribe(audio_path: Path, settings: TranscriptionSettings) -> dict[str, o
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print("阶段 2/4 · 转写")
     _progress("转写", 0)
-    model = whisperx.load_model(settings["model"], device, compute_type=settings["compute_type"], language=settings["language"])
+    asr_options = _asr_options(settings)
+    model = whisperx.load_model(
+        settings["model"], device, compute_type=settings["compute_type"], language=settings["language"], asr_options=asr_options
+    )
     try:
-        asr_options = _asr_options(settings)
         result = model.transcribe(
             str(audio_path),
             batch_size=settings["batch_size"],
             language=settings["language"],
             chunk_size=settings["chunk_size"],
-            asr_options=asr_options,
             progress_callback=lambda percent: _progress("转写", percent),
         )
         _ensure_punkt_tab()
