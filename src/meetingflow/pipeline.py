@@ -1,0 +1,305 @@
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+import sqlite3
+import tempfile
+import time
+import tomllib
+import traceback
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import TypedDict
+
+from .audio import probe_audio
+from .diarize import DiarizationSettings, SpeakerSegment, diarize
+from .render import render_speakers_markdown, render_speakers_srt
+from .transcribe import TranscriptionSettings, transcribe
+
+
+class Settings(TypedDict):
+    inbox: Path
+    work: Path
+    output: Path
+    transcription: TranscriptionSettings
+    diarization: DiarizationSettings
+
+
+@dataclass(frozen=True)
+class ProcessResult:
+    job_id: str
+    output_dir: Path
+    skipped: bool
+
+
+@dataclass(frozen=True)
+class JobSummary:
+    job_id: str
+    source: Path
+    output_dir: Path
+    modified_at: float
+
+
+def load_settings(path: Path | None) -> Settings:
+    values: dict[str, object] = {}
+    if path is not None:
+        with path.open("rb") as file:
+            values = tomllib.load(file)
+    section = values.get("transcription", {})
+    diarization = values.get("diarization", {})
+    if not isinstance(section, dict):
+        raise ValueError("配置中的 transcription 必须是表")
+    if not isinstance(diarization, dict):
+        raise ValueError("配置中的 diarization 必须是表")
+    return {"inbox": Path(str(values.get("inbox", "D:/Meetings/Inbox"))), "work": Path(str(values.get("work", "D:/Meetings/Work"))), "output": Path(str(values.get("output", "D:/Meetings/Output"))), "transcription": {"model": str(section.get("model", "large-v3")), "language": str(section.get("language", "zh")), "compute_type": str(section.get("compute_type", "int8_float16")), "batch_size": int(section.get("batch_size", 4))}, "diarization": {"min_speakers": _optional_int(diarization.get("min_speakers")), "max_speakers": _optional_int(diarization.get("max_speakers"))}}
+
+
+def process(source: Path, settings: Settings, force: bool = False) -> ProcessResult:
+    source = source.expanduser().resolve()
+    if not source.is_file():
+        raise ValueError(f"找不到输入文件：{source}")
+    print(f"\n开始处理：{source.name}")
+    job_id = _sha256(source)
+    settings["work"].mkdir(parents=True, exist_ok=True)
+    database = _open_database(settings["work"] / "meetingflow.db")
+    try:
+        existing = database.execute("SELECT status, output_dir FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        output_dir = Path(existing[1]) if existing is not None else _output_dir(settings["output"], source, job_id)
+        artifact_dir = _artifact_dir(job_id, output_dir, settings)
+        reusable = all((artifact_dir / name).is_file() for name in ("transcript.raw.json", "speakers.json"))
+        if existing is not None and existing[0] == "succeeded" and not force and reusable:
+            _render_outputs(artifact_dir, output_dir, output_formats(settings), include_existing=True)
+            _job(database, job_id, source, output_dir, "succeeded")
+            _log(artifact_dir, "job_skipped", job_id=job_id)
+            return ProcessResult(job_id, output_dir, True)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        _job(database, job_id, source, output_dir, "running")
+        _log(artifact_dir, "job_started", job_id=job_id)
+        stage = "probe"
+        try:
+            started = time.monotonic(); _stage(database, job_id, stage, "running")
+            probe = probe_audio(source)
+            _atomic_json(artifact_dir / "source.json", {"path": str(source), "sha256": job_id, "size": source.stat().st_size, "mtime": source.stat().st_mtime, "media": probe})
+            _stage(database, job_id, stage, "succeeded"); _log(artifact_dir, "stage_succeeded", stage=stage, elapsed_seconds=round(time.monotonic() - started, 3))
+            raw_path = artifact_dir / "transcript.raw.json"
+            stage = "transcribe"; started = time.monotonic(); _stage(database, job_id, stage, "running", json.dumps(settings["transcription"], ensure_ascii=False))
+            if raw_path.is_file() and not force:
+                print("阶段 1/3 · 复用已有转写")
+                try:
+                    transcript = json.loads(raw_path.read_text(encoding="utf-8"))
+                except json.JSONDecodeError as error:
+                    raise ValueError("转写产物损坏。请执行 retry <job-id> --from transcribe 重新生成。") from error
+            else:
+                transcript = transcribe(source, settings["transcription"])
+            _atomic_json(raw_path, transcript)
+            _stage(database, job_id, stage, "succeeded"); _log(artifact_dir, "stage_succeeded", stage=stage, elapsed_seconds=round(time.monotonic() - started, 3), parameters=settings["transcription"])
+            stage = "diarize"; started = time.monotonic(); _stage(database, job_id, stage, "running", json.dumps(settings["diarization"], ensure_ascii=False))
+            speakers = diarize(source, settings["diarization"])
+            _speaker_names(speakers, artifact_dir / "speaker-map.toml")
+            _atomic_json(artifact_dir / "speakers.json", {"segments": speakers})
+            _render_outputs(artifact_dir, output_dir, output_formats(settings), include_existing=True)
+            _stage(database, job_id, stage, "succeeded"); _log(artifact_dir, "stage_succeeded", stage=stage, elapsed_seconds=round(time.monotonic() - started, 3), parameters=settings["diarization"])
+        except Exception:
+            _stage(database, job_id, stage, "failed"); _job(database, job_id, source, output_dir, "failed"); _log(artifact_dir, "job_failed", job_id=job_id, stage=stage, traceback=traceback.format_exc())
+            raise
+        _job(database, job_id, source, output_dir, "succeeded"); _log(artifact_dir, "job_succeeded", job_id=job_id)
+        return ProcessResult(job_id, output_dir, False)
+    finally:
+        database.close()
+
+
+def render(job_id: str, settings: Settings) -> Path:
+    """应用 speaker-map.toml，不重新运行任何模型。"""
+    full_job_id, output_dir = _find_job(job_id, settings)
+    artifact_dir = _artifact_dir(full_job_id, output_dir, settings)
+    _render_outputs(artifact_dir, output_dir, output_formats(settings), include_existing=True)
+    _log(artifact_dir, "render_succeeded")
+    return output_dir
+
+
+def completed_jobs(settings: Settings) -> list[JobSummary]:
+    database = _open_database(settings["work"] / "meetingflow.db")
+    try:
+        rows = database.execute("SELECT id, source_path, output_dir FROM jobs WHERE status = 'succeeded'").fetchall()
+    finally:
+        database.close()
+    jobs = [JobSummary(row[0], Path(row[1]), Path(row[2]), _modified_at(Path(row[1]), Path(row[2]))) for row in rows]
+    return sorted(jobs, key=lambda job: job.modified_at, reverse=True)
+
+
+def job_speakers(job_id: str, settings: Settings) -> list[tuple[str, str]]:
+    full_job_id, output_dir = _find_job(job_id, settings); artifact_dir = _artifact_dir(full_job_id, output_dir, settings)
+    speakers = _read_speakers(artifact_dir)
+    return list(_speaker_names(speakers, artifact_dir / "speaker-map.toml").items())
+
+
+def rename_speaker(job_id: str, label: str, name: str, settings: Settings) -> Path:
+    name = name.strip()
+    if not name:
+        raise ValueError("发言人姓名不能为空")
+    full_job_id, output_dir = _find_job(job_id, settings); artifact_dir = _artifact_dir(full_job_id, output_dir, settings)
+    speakers = _read_speakers(artifact_dir); names = _speaker_names(speakers, artifact_dir / "speaker-map.toml")
+    if label not in names:
+        raise ValueError("任务中不存在该发言人")
+    names[label] = name
+    _write_speaker_names(artifact_dir / "speaker-map.toml", names)
+    _render_outputs(artifact_dir, output_dir, output_formats(settings), include_existing=True)
+    _log(artifact_dir, "speaker_renamed", speaker=label)
+    return output_dir
+
+
+def output_formats(settings: Settings) -> tuple[str, ...]:
+    path = settings["work"] / "preferences.json"
+    if not path.is_file():
+        return ("md",)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as error:
+        raise ValueError("输出偏好文件损坏，请删除 Work/preferences.json 后重试") from error
+    formats = payload.get("output_formats") if isinstance(payload, dict) else None
+    if not isinstance(formats, list) or not formats or any(item not in {"md", "srt"} for item in formats):
+        raise ValueError("输出偏好文件中的 output_formats 格式异常")
+    return tuple(dict.fromkeys(formats))
+
+
+def save_output_formats(settings: Settings, formats: tuple[str, ...]) -> None:
+    if not formats or any(item not in {"md", "srt"} for item in formats):
+        raise ValueError("输出格式只能是 md、srt 或两者")
+    settings["work"].mkdir(parents=True, exist_ok=True)
+    _atomic_json(settings["work"] / "preferences.json", {"output_formats": list(dict.fromkeys(formats))})
+
+
+def retry(job_id: str, from_stage: str, settings: Settings) -> ProcessResult:
+    """从转写或说话人阶段恢复任务；转写产物存在时自动复用。"""
+    database = _open_database(settings["work"] / "meetingflow.db")
+    try:
+        rows = database.execute("SELECT source_path FROM jobs WHERE id LIKE ?", (f"{job_id}%",)).fetchall()
+    finally:
+        database.close()
+    if len(rows) != 1:
+        raise ValueError("未找到唯一任务，请提供完整的 job-id")
+    if from_stage not in {"probe", "transcribe", "diarize"}:
+        raise ValueError("--from 只能是 probe、transcribe 或 diarize")
+    return process(Path(rows[0][0]), settings, force=from_stage in {"probe", "transcribe"})
+
+
+def _find_job(job_id: str, settings: Settings) -> tuple[str, Path]:
+    database = _open_database(settings["work"] / "meetingflow.db")
+    try:
+        rows = database.execute("SELECT id, output_dir FROM jobs WHERE id LIKE ? AND status = 'succeeded'", (f"{job_id}%",)).fetchall()
+    finally:
+        database.close()
+    if len(rows) != 1:
+        raise ValueError("未找到唯一的成功任务")
+    return str(rows[0][0]), Path(rows[0][1])
+
+
+def _artifact_dir(job_id: str, output_dir: Path, settings: Settings) -> Path:
+    return output_dir if (output_dir / "transcript.raw.json").is_file() else settings["work"] / "jobs" / job_id
+
+
+def _read_speakers(artifact_dir: Path) -> list[SpeakerSegment]:
+    with (artifact_dir / "speakers.json").open("r", encoding="utf-8") as file:
+        payload = json.load(file)
+    if not isinstance(payload, dict) or not isinstance(payload.get("segments"), list):
+        raise ValueError("任务的发言人产物格式异常")
+    return [item for item in payload["segments"] if isinstance(item, dict) and {"start", "end", "speaker"} <= item.keys()]
+
+
+def _render_outputs(artifact_dir: Path, output_dir: Path, formats: tuple[str, ...], include_existing: bool = False) -> None:
+    with (artifact_dir / "transcript.raw.json").open("r", encoding="utf-8") as file:
+        transcript = json.load(file)
+    if not isinstance(transcript, dict):
+        raise ValueError("任务的转写产物格式异常")
+    speakers = _read_speakers(artifact_dir); names = _speaker_names(speakers, artifact_dir / "speaker-map.toml")
+    selected = set(formats)
+    if include_existing:
+        selected.update(suffix for suffix in ("md", "srt") if (output_dir / f"speakers.{suffix}").is_file())
+    output_dir.mkdir(parents=True, exist_ok=True)
+    if "md" in selected:
+        _atomic_text(output_dir / "speakers.md", render_speakers_markdown(transcript, speakers, names))
+    if "srt" in selected:
+        _atomic_text(output_dir / "speakers.srt", render_speakers_srt(transcript, speakers, names))
+
+
+def _open_database(path: Path) -> sqlite3.Connection:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    database = sqlite3.connect(path)
+    database.execute("CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, source_path TEXT NOT NULL, output_dir TEXT NOT NULL, status TEXT NOT NULL)")
+    database.execute("CREATE TABLE IF NOT EXISTS stages (job_id TEXT NOT NULL, name TEXT NOT NULL, status TEXT NOT NULL, parameters TEXT, updated_at TEXT NOT NULL, PRIMARY KEY (job_id, name))")
+    database.commit(); return database
+
+
+def _job(database: sqlite3.Connection, job_id: str, source: Path, output_dir: Path, status: str) -> None:
+    database.execute("INSERT INTO jobs VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET source_path=excluded.source_path, output_dir=excluded.output_dir, status=excluded.status", (job_id, str(source), str(output_dir), status)); database.commit()
+
+
+def _stage(database: sqlite3.Connection, job_id: str, name: str, status: str, parameters: str | None = None) -> None:
+    database.execute("INSERT INTO stages VALUES (?, ?, ?, ?, ?) ON CONFLICT(job_id, name) DO UPDATE SET status=excluded.status, parameters=COALESCE(excluded.parameters, stages.parameters), updated_at=excluded.updated_at", (job_id, name, status, parameters, datetime.now(UTC).isoformat())); database.commit()
+
+
+def _sha256(source: Path) -> str:
+    digest = hashlib.sha256()
+    with source.open("rb") as file:
+        while chunk := file.read(1024 * 1024): digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _optional_int(value: object) -> int | None:
+    return None if value is None else int(value)
+
+
+def _speaker_names(speakers: list[SpeakerSegment], path: Path) -> dict[str, str]:
+    labels = sorted({segment["speaker"] for segment in speakers})
+    if path.is_file():
+        with path.open("rb") as file:
+            values = tomllib.load(file)
+        names = values.get("speakers", {})
+        if not isinstance(names, dict):
+            raise ValueError("speaker-map.toml 中的 speakers 必须是表")
+        return {label: str(names.get(label, f"Speaker {index}")) for index, label in enumerate(labels, 1)}
+    names = {label: f"Speaker {index}" for index, label in enumerate(labels, 1)}
+    _write_speaker_names(path, names)
+    return names
+
+
+def _write_speaker_names(path: Path, names: dict[str, str]) -> None:
+    lines = ["[speakers]", *(f"{json.dumps(label, ensure_ascii=False)} = {json.dumps(name, ensure_ascii=False)}" for label, name in names.items()), ""]
+    _atomic_text(path, "\n".join(lines))
+
+
+def _modified_at(source: Path, output_dir: Path) -> float:
+    try:
+        return source.stat().st_mtime
+    except OSError:
+        try:
+            return output_dir.stat().st_mtime
+        except OSError:
+            return 0.0
+
+
+def _output_dir(root: Path, source: Path, job_id: str) -> Path:
+    name = re.sub(r'[<>:"/\\|?*]', "_", source.stem).strip(". ") or "meeting"
+    return root / f"{datetime.now():%Y-%m-%d}_{name}_{job_id[:8]}"
+
+
+def _atomic_json(path: Path, payload: object) -> None:
+    _atomic_text(path, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+
+
+def _atomic_text(path: Path, content: str) -> None:
+    descriptor, temporary = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", text=True)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as file: file.write(content)
+        Path(temporary).replace(path)
+    except Exception:
+        Path(temporary).unlink(missing_ok=True); raise
+
+
+def _log(output_dir: Path, event: str, **fields: object) -> None:
+    with (output_dir / "run.jsonl").open("a", encoding="utf-8", newline="\n") as file:
+        file.write(json.dumps({"timestamp": datetime.now(UTC).isoformat(), "event": event, **fields}, ensure_ascii=False) + "\n")

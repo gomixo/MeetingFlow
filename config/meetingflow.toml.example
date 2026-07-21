@@ -1,0 +1,14 @@
+inbox = "D:/Meetings/Inbox"
+work = "D:/Meetings/Work"
+output = "D:/Meetings/Output"
+
+[transcription]
+model = "large-v3"
+language = "zh"
+compute_type = "int8_float16"
+batch_size = 4
+
+[diarization]
+# 可选：仅在已知人数时设置，能提高区分稳定性。
+# min_speakers = 2
+# max_speakers = 4
