@@ -55,7 +55,8 @@ punkt_tab.zip
 *.pth
 *.safetensors
 
-# 系统文件
+# 工具与系统文件
+.zcode/
 .DS_Store
 Desktop.ini
 Thumbs.db
