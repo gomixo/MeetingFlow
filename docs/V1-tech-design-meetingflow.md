@@ -1,4 +1,26 @@
+---
+title: MeetingFlow V1 详细开发方案
+slug: V1-tech-design-meetingflow
+version: V1
+doc_type: tech-design
+status: superseded
+scope: project
+audited_commit: null
+branch: main
+source: codex-self
+created: 2026-07-21
+last_reviewed: 2026-08-05
+supersedes: V0-project-plan-meetingflow
+superseded_by: V2-tech-design-wayfinder-pipeline
+related:
+  - V0-project-plan-meetingflow
+  - R1-changelog-bugs-and-perf
+---
+
 # MeetingFlow V1 详细开发方案
+
+> 历史文档：此文档记录 V1 的 WhisperX、词级对齐和 pyannote 架构，不再作为当前实现依据。
+> 当前目标架构见 [V2-tech-design-wayfinder-pipeline.md](V2-tech-design-wayfinder-pipeline.md)。
 
 > 日期：2026-07-20
 >

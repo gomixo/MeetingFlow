@@ -1,0 +1,788 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>MeetingFlow 四阶段流水线 · 可视化讲解</title>
+<meta name="doc:title" content="MeetingFlow 四阶段流水线可视化讲解">
+<meta name="doc:slug" content="V1-visualization-4-stage-pipeline">
+<meta name="doc:version" content="V1">
+<meta name="doc:doc_type" content="visualization">
+<meta name="doc:status" content="final">
+<meta name="doc:scope" content="project">
+<meta name="doc:source" content="codex-self">
+<meta name="doc:created" content="2026-07-22">
+<meta name="doc:last_reviewed" content="2026-07-22">
+<meta name="doc:related" content="R1-changelog-bugs-and-perf">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "TechArticle",
+  "name": "MeetingFlow 四阶段流水线可视化讲解",
+  "identifier": "V1-visualization-4-stage-pipeline",
+  "version": "V1",
+  "dateCreated": "2026-07-22",
+  "dateModified": "2026-07-22",
+  "about": "MeetingFlow V1 流水线架构（probe → normalize → transcribe → diarize → align → render）"
+}
+</script>
+<style>
+  :root {
+    --bg: #0f172a;
+    --bg-card: #1e293b;
+    --bg-soft: #334155;
+    --text: #e2e8f0;
+    --text-dim: #94a3b8;
+    --accent: #38bdf8;
+    --accent-2: #a78bfa;
+    --green: #34d399;
+    --yellow: #fbbf24;
+    --red: #f87171;
+    --orange: #fb923c;
+    --border: #475569;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: linear-gradient(135deg, #0f172a 0%, #1e1b4b 100%);
+    color: var(--text);
+    line-height: 1.7;
+    min-height: 100vh;
+  }
+  .container { max-width: 1100px; margin: 0 auto; padding: 40px 24px 80px; }
+  header { text-align: center; margin-bottom: 50px; }
+  h1 { font-size: 2.4em; margin-bottom: 8px; background: linear-gradient(90deg, #38bdf8, #a78bfa); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  .subtitle { color: var(--text-dim); font-size: 1.1em; }
+  .intro { background: var(--bg-card); border-left: 4px solid var(--accent); padding: 20px 24px; border-radius: 8px; margin-bottom: 40px; }
+  .intro p { margin: 8px 0; }
+  .pipeline {
+    display: flex;
+    align-items: stretch;
+    justify-content: space-between;
+    gap: 8px;
+    margin: 40px 0;
+    flex-wrap: wrap;
+  }
+  .pipeline-step {
+    flex: 1 1 200px;
+    background: var(--bg-card);
+    border: 2px solid var(--border);
+    border-radius: 12px;
+    padding: 16px;
+    text-align: center;
+    position: relative;
+    transition: transform .2s, box-shadow .2s;
+  }
+  .pipeline-step:hover { transform: translateY(-4px); box-shadow: 0 12px 24px rgba(0,0,0,.3); }
+  .pipeline-step .num {
+    display: inline-block; width: 36px; height: 36px; line-height: 36px;
+    background: var(--accent); color: #0f172a; border-radius: 50%;
+    font-weight: bold; margin-bottom: 8px;
+  }
+  .pipeline-step .icon { font-size: 2em; display: block; margin: 6px 0; }
+  .pipeline-step .title { font-weight: bold; color: var(--text); }
+  .pipeline-step .file { font-size: .85em; color: var(--text-dim); font-family: Consolas, monospace; }
+  .arrow {
+    align-self: center;
+    color: var(--accent);
+    font-size: 1.6em;
+    flex: 0 0 auto;
+  }
+  .stage {
+    background: var(--bg-card);
+    border-radius: 16px;
+    padding: 32px;
+    margin: 40px 0;
+    border: 1px solid var(--border);
+    box-shadow: 0 4px 20px rgba(0,0,0,.2);
+  }
+  .stage-header {
+    display: flex; align-items: center; gap: 16px;
+    margin-bottom: 20px;
+    padding-bottom: 16px;
+    border-bottom: 1px dashed var(--border);
+  }
+  .stage-badge {
+    background: var(--accent); color: #0f172a;
+    padding: 6px 14px; border-radius: 20px;
+    font-weight: bold; font-size: .9em;
+  }
+  .stage-title { font-size: 1.6em; margin: 0; }
+  .stage-file {
+    font-family: Consolas, monospace;
+    color: var(--text-dim);
+    background: var(--bg-soft);
+    padding: 4px 10px;
+    border-radius: 4px;
+    font-size: .9em;
+  }
+  h3 { color: var(--accent); margin-top: 28px; border-left: 3px solid var(--accent); padding-left: 12px; }
+  h4 { color: var(--accent-2); margin-top: 18px; }
+  .why-box, .what-box, .how-box {
+    background: rgba(56, 189, 248, 0.06);
+    border-left: 3px solid var(--accent);
+    padding: 12px 16px;
+    border-radius: 6px;
+    margin: 16px 0;
+  }
+  .why-box { border-color: var(--yellow); background: rgba(251, 191, 36, 0.06); }
+  .how-box { border-color: var(--green); background: rgba(52, 211, 153, 0.06); }
+  .label {
+    display: inline-block;
+    font-weight: bold;
+    color: #0f172a;
+    padding: 2px 10px;
+    border-radius: 4px;
+    font-size: .85em;
+    margin-right: 8px;
+  }
+  .label.why { background: var(--yellow); }
+  .label.what { background: var(--accent); }
+  .label.how { background: var(--green); }
+  pre {
+    background: #0b1220;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px;
+    overflow-x: auto;
+    font-size: .88em;
+    line-height: 1.55;
+    color: #cbd5e1;
+  }
+  code { font-family: Consolas, "Courier New", monospace; }
+  .flow-diagram {
+    background: #0b1220;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+    margin: 16px 0;
+    font-family: Consolas, monospace;
+    font-size: .9em;
+    white-space: pre;
+    overflow-x: auto;
+    color: var(--text);
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 16px 0;
+    background: var(--bg-soft);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  th, td { padding: 12px 14px; text-align: left; border-bottom: 1px solid var(--border); }
+  th { background: #0b1220; color: var(--accent); font-weight: 600; }
+  tr:last-child td { border-bottom: none; }
+  .in-out {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    gap: 16px;
+    align-items: center;
+    margin: 16px 0;
+  }
+  .in-out .box {
+    background: var(--bg-soft);
+    border-radius: 8px;
+    padding: 12px 16px;
+    border: 1px solid var(--border);
+  }
+  .in-out .arrow-big { font-size: 2em; color: var(--accent); text-align: center; }
+  .in-out .label-tag {
+    font-size: .75em;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: var(--text-dim);
+    margin-bottom: 6px;
+  }
+  .callout {
+    background: linear-gradient(135deg, rgba(167, 139, 250, 0.12), rgba(56, 189, 248, 0.08));
+    border-radius: 10px;
+    padding: 16px 20px;
+    margin: 20px 0;
+    border: 1px solid rgba(167, 139, 250, 0.3);
+  }
+  .callout strong { color: var(--accent-2); }
+  .example-audio {
+    background: #0b1220;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+    margin: 16px 0;
+    font-family: Consolas, monospace;
+    font-size: .85em;
+  }
+  .audio-wave {
+    display: flex; align-items: center; justify-content: center;
+    height: 60px; margin: 12px 0;
+    background: linear-gradient(90deg,
+      transparent 0%, transparent 100%);
+    border-radius: 6px;
+    background: #1a2332;
+    position: relative;
+    overflow: hidden;
+  }
+  .bar {
+    width: 3px;
+    margin: 0 1px;
+    background: linear-gradient(180deg, #38bdf8, #a78bfa);
+    border-radius: 1px;
+    opacity: .8;
+  }
+  .speaker-tag {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 12px;
+    font-size: .85em;
+    font-weight: bold;
+    margin: 0 4px;
+  }
+  .tag-A { background: #38bdf8; color: #0f172a; }
+  .tag-B { background: #fbbf24; color: #0f172a; }
+  .tag-C { background: #a78bfa; color: #0f172a; }
+  footer {
+    margin-top: 60px;
+    padding-top: 30px;
+    border-top: 1px solid var(--border);
+    text-align: center;
+    color: var(--text-dim);
+    font-size: .9em;
+  }
+  @media (max-width: 720px) {
+    .pipeline { flex-direction: column; }
+    .arrow { transform: rotate(90deg); }
+    .in-out { grid-template-columns: 1fr; }
+    .in-out .arrow-big { transform: rotate(90deg); }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+<header>
+  <h1>🎙️ MeetingFlow 四阶段流水线</h1>
+  <p class="subtitle">一段长达数小时的会议录音，是如何一步步变成结构化文字稿的？</p>
+</header>
+
+<div class="intro">
+  <p><strong>📌 一句话总结：</strong>MeetingFlow 把录音变成文字稿的过程就像工厂流水线 —— 先拆开包装看规格（探测）、再统一规格（标准化）、再听写内容（转写）、再标注是谁说的（说话人识别）、最后排版成稿（渲染）。</p>
+  <p><strong>⏱️ 整段录音流向：</strong>OBS 录好的原始文件 → 4 个阶段顺序处理 → 输出 <code>speakers.md</code> / <code>speakers.srt</code></p>
+</div>
+
+<!-- 流水线总览 -->
+<h2 style="text-align:center; margin-top: 50px;">🛠️ 全流程一览</h2>
+<div class="pipeline">
+  <div class="pipeline-step">
+    <div class="num">0</div>
+    <span class="icon">🔍</span>
+    <div class="title">探测</div>
+    <div class="file">audio.py · probe_audio</div>
+  </div>
+  <div class="arrow">→</div>
+  <div class="pipeline-step">
+    <div class="num">1</div>
+    <span class="icon">🎚️</span>
+    <div class="title">标准化</div>
+    <div class="file">audio.py · normalize_audio</div>
+  </div>
+  <div class="arrow">→</div>
+  <div class="pipeline-step">
+    <div class="num">2</div>
+    <span class="icon">📝</span>
+    <div class="title">转写 + 对齐</div>
+    <div class="file">transcribe.py</div>
+  </div>
+  <div class="arrow">→</div>
+  <div class="pipeline-step">
+    <div class="num">3</div>
+    <span class="icon">👥</span>
+    <div class="title">说话人识别</div>
+    <div class="file">diarize.py</div>
+  </div>
+  <div class="arrow">→</div>
+  <div class="pipeline-step">
+    <div class="icon">📄</span>
+    <div class="title">渲染</div>
+    <div class="file">render.py</div>
+  </div>
+</div>
+
+<!-- 阶段 0 -->
+<div class="stage" style="border-top: 4px solid var(--accent);">
+  <div class="stage-header">
+    <span class="stage-badge">阶段 0/4</span>
+    <h2 class="stage-title">🔍 媒体探测（probe）</h2>
+    <span class="stage-file">src/meetingflow/audio.py</span>
+  </div>
+
+  <div class="in-out">
+    <div class="box">
+      <div class="label-tag">输入</div>
+      <div>OBS 录好的原始文件（<code>.mkv</code> / <code>.mp4</code> / <code>.wav</code> …）</div>
+    </div>
+    <div class="arrow-big">➡️</div>
+    <div class="box">
+      <div class="label-tag">输出</div>
+      <div><code>source.json</code>（包含时长、采样率、声道、码率等元信息）</div>
+    </div>
+  </div>
+
+  <h4><span class="label what">做什么</span></h4>
+  <p>调用 <code>ffprobe</code> 读取文件"包装信息"——这个文件到底是什么编码？多长？几路声道？采样率多少？它不处理音频内容，只读取"身份证"。</p>
+
+  <div class="example-audio">
+    <div style="color: var(--text-dim);">// 实际产出示例（pipeline.py:329 写入 source.json）</div>
+    <pre>{
+  "path": "D:/Meetings/Inbox/周会-0721.mkv",
+  "sha256": "a3f5c8...",
+  "size": 524288000,
+  "mtime": 1721568000.0,
+  "media": {
+    "format_name": "matroska,webm",
+    "duration_seconds": 3725.4,    // 约 62 分钟
+    "sample_rate": 48000,          // OBS 默认 48kHz
+    "channels": 2,                 // 双声道
+    "bit_rate": 128000,
+    "warnings": []
+  }
+}</pre>
+  </div>
+
+  <h4><span class="label why">为什么要做</span></h4>
+  <div class="why-box">
+    <p>想象一下快递员送包裹 —— 他第一件事是先看一眼包裹上的标签（大小、重量、易碎品？），才知道要不要小心搬运。同样，后续阶段需要先确认：</p>
+    <ul>
+      <li><strong>这个文件到底是不是合法音频？</strong>万一是损坏文件、空文件、纯视频文件，后面所有步骤都是白跑。</li>
+      <li><strong>有多长？</strong>1 小时的录音和 5 小时的录音处理时间天差地别。</li>
+      <li><strong>是什么编码？</strong>OBS 可能录成 MKV 容器 + Opus 编码，也可能录成 MP4 + AAC，必须先把规格探明。</li>
+      <li><strong>失败要早暴露：</strong>文件少了、被占用、损坏 —— 在阶段 0 就立刻报错，而不是等转写跑到 90% 才崩。</li>
+    </ul>
+  </div>
+
+  <h4><span class="label how">怎么做</span></h4>
+  <div class="how-box">
+    <p>本质上就是命令行跑一次 <code>ffprobe</code>：</p>
+  </div>
+  <div class="flow-diagram">ffprobe -v error -show_format -show_streams -of json 周会-0721.mkv
+        ↓
+   解析 JSON：找 streams 里 codec_type == "audio" 的那条
+        ↓
+   取出 duration / sample_rate / channels / bit_rate
+        ↓
+   若任一字段 ≤ 0，抛 "媒体信息不完整"</div>
+
+  <div class="callout">
+    <strong>💡 关键细节：</strong>这一步是 <strong>纯只读</strong>，<strong>绝不修改源文件</strong>，遵守 AGENTS.md 的"原始录音只读"原则。
+  </div>
+</div>
+
+<!-- 阶段 1 -->
+<div class="stage" style="border-top: 4px solid var(--accent-2);">
+  <div class="stage-header">
+    <span class="stage-badge">阶段 1/4</span>
+    <h2 class="stage-title">🎚️ 音频标准化（normalize）</h2>
+    <span class="stage-file">src/meetingflow/audio.py</span>
+  </div>
+
+  <div class="in-out">
+    <div class="box">
+      <div class="label-tag">输入</div>
+      <div>原始录音 + 阶段 0 的元信息</div>
+    </div>
+    <div class="arrow-big">➡️</div>
+    <div class="box">
+      <div class="label-tag">输出</div>
+      <div><code>audio-16k-mono.wav</code>（16kHz / 单声道 / float32）+ 最大音量分贝数</div>
+    </div>
+  </div>
+
+  <h4><span class="label what">做什么</span></h4>
+  <p>把所有音频"翻译"成 <strong>AI 模型唯一能听懂的格式</strong>：采样率 16kHz、单声道、float32 PCM。无论你录的是 48kHz 立体声 MKV 还是 44.1kHz 双声道 MP3，出来都变成统一规格的 WAV 文件。</p>
+
+  <div class="example-audio">
+    <div style="color: var(--text-dim);">// FFmpeg 实际调用命令（audio.py:61）</div>
+    <pre>ffmpeg -y -hide_banner -i 周会-0721.mkv \
+    -vn          \    # 不要视频
+    -ac 1        \    # 声道数 = 1（合并左右声道）
+    -ar 16000    \    # 采样率 = 16000 Hz
+    -c:a pcm_f32le \  # 编码 = 32位浮点 PCM
+    -af volumedetect \ # 同时检测最大音量
+    -f wav       \    # 容器 = WAV
+    audio-16k-mono.wav</pre>
+  </div>
+
+  <h4><span class="label why">为什么要做</span></h4>
+  <div class="why-box">
+    <p>这是整个流水线最容易被低估、但<strong>最关键</strong>的一步。背后的逻辑是：</p>
+    <ul>
+      <li><strong>🗣️ 人耳 vs 机器耳：</strong>人类听 44.1kHz 立体声觉得"音质好"，但 Whisper/pyannote 这类语音模型<strong>训练时</strong>只用 16kHz 单声道。喂给它其他格式，要么报错，要么精度下降。</li>
+      <li><strong>📉 体积大降：</strong>62 分钟的 48kHz 立体声 ≈ 700 MB；标准化后只有 ≈ 230 MB。后续转写阶段要反复读盘，节省时间明显。</li>
+      <li><strong>🔁 一次标准化，多次复用：</strong>阶段 2（转写）和阶段 3（说话人识别）都要读这个 WAV。如果不标准化，每个阶段都要重复一次转换。</li>
+      <li><strong>⚡ 流式 + 原子写入：</strong>FFmpeg 直接流式写到磁盘（不是先全读进内存），再原子重命名 —— 即使中途断电也不会留半个文件。</li>
+      <li><strong>🔊 顺便量音量：</strong>用 FFmpeg 自带的 <code>volumedetect</code> 滤镜一次跑完，省一次进程开销；若发现 <code>-inf dB</code>，立刻知道是纯静音录音，避免后面白跑模型。</li>
+    </ul>
+  </div>
+
+  <h4><span class="label how">怎么做</span></h4>
+  <div class="how-box">
+    <p>调用一次 FFmpeg 进程，把音频"重新打包"成模型认识的样子：</p>
+  </div>
+
+  <div class="flow-diagram">原始 .mkv (48kHz 立体声 Opus)
+        │
+        │  ffmpeg 转码
+        ▼
+.tmp 临时文件（流式写入，避免内存爆掉）
+        │
+        │  atomic rename（只有写完才改名为正式名）
+        ▼
+audio-16k-mono.wav (16kHz 单声道 float32)
+        │
+        │  stderr 中正则匹配 max_volume: -X.X dB
+        ▼
+记入 source.json.max_volume_db 字段（用于排查"为什么没声音"）</div>
+</div>
+
+<!-- 阶段 2 -->
+<div class="stage" style="border-top: 4px solid var(--green);">
+  <div class="stage-header">
+    <span class="stage-badge">阶段 2/4</span>
+    <h2 class="stage-title">📝 语音转写（transcribe）</h2>
+    <span class="stage-file">src/meetingflow/transcribe.py</span>
+  </div>
+
+  <div class="in-out">
+    <div class="box">
+      <div class="label-tag">输入</div>
+      <div><code>audio-16k-mono.wav</code> + 配置（模型大小、语言、batch、惩罚参数等）</div>
+    </div>
+    <div class="arrow-big">➡️</div>
+    <div class="box">
+      <div class="label-tag">输出</div>
+      <div><code>transcript.raw.json</code> —— 每段带<strong>词级时间戳</strong>的文字</div>
+    </div>
+  </div>
+
+  <h4><span class="label what">做什么</span></h4>
+  <p>这是流水线的"重头戏"。让 WhisperX 模型把音频<strong>一字不漏</strong>听写下来，并精确标注<strong>每个词出现和结束的时间</strong>（精度到几十毫秒）。</p>
+
+  <p>这一阶段内部其实分两小步：</p>
+  <ol>
+    <li><strong>2a 听写</strong>：Whisper large-v3 模型把音频切成 30 秒一帧，逐帧生成中文文本。</li>
+    <li><strong>2b 词级对齐</strong>：用 wav2vec2 对齐模型，把每段文字里的<strong>每个字/词</strong>对应到具体时间戳上。</li>
+  </ol>
+
+  <div class="example-audio">
+    <div style="color: var(--text-dim);">// 实际产出示例（transcript.raw.json 节选）</div>
+    <pre>{
+  "language": "zh",
+  "segments": [
+    {
+      "start": 12.45,
+      "end": 15.82,
+      "text": " 我们今天主要讨论一下排期问题",
+      "words": [
+        {"word": "我们",   "start": 12.45, "end": 12.91},
+        {"word": "今天",   "start": 12.91, "end": 13.37},
+        {"word": "主要",   "start": 13.37, "end": 13.74},
+        {"word": "讨论",   "start": 13.74, "end": 14.20},
+        {"word": "一下",   "start": 14.20, "end": 14.50},
+        {"word": "排期",   "start": 14.50, "end": 15.05},
+        {"word": "问题",   "start": 15.05, "end": 15.82}
+      ]
+    }
+  ]
+}</pre>
+  </div>
+
+  <h4><span class="label why">为什么要做</span></h4>
+  <div class="why-box">
+    <p>没有这一步，后面就完全谈不上"会议纪要"了。但为什么要选 WhisperX 而不是直接用 OpenAI 的 Whisper？</p>
+    <ul>
+      <li><strong>🎯 词级时间戳是后面说话人识别的"胶水"</strong>：阶段 3 只会告诉你"0–60 秒是 A 在说话、60–120 秒是 B 在说话"，但不会告诉你 A 说了哪个词。你需要把<strong>词的开始时间</strong>映射到<strong>说话人的时间段</strong>上，才能拼出"A 说：我们今天主要讨论……"。这一步能省下 WhisperX 内置的 diarization 调用，由项目自己控制。</li>
+      <li><strong>🏠 完全本地：</strong>模型在本地 RTX 4060 上推理，不上传任何音频或文字，遵守 V1 边界。</li>
+      <li><strong>🧠 大模型更准：</strong>默认 <code>large-v3</code> 是 Whisper 当前最强开源中文模型；用 <code>int8_float16</code> 量化兼顾速度与显存。</li>
+      <li><strong>🛠️ 可调参数：</strong>支持 <code>repetition_penalty</code>、<code>no_repeat_ngram_size</code> 等参数应对 Whisper 著名的"重复幻觉"问题（详细背景见 docs/转录质量问题诊断与改进建议.md）。</li>
+      <li><strong>♻️ 串行释放显存：</strong>AGENTS.md 明确"RTX 4060 8GB 上模型串行加载"，所以转写完立刻 <code>del model; torch.cuda.empty_cache()</code>，给阶段 3 留足空间。</li>
+    </ul>
+  </div>
+
+  <h4><span class="label how">怎么做</span></h4>
+  <div class="how-box">
+    <p>两个模型接力：</p>
+  </div>
+
+  <div class="flow-diagram">audio-16k-mono.wav
+        │
+        ▼
+[2a] Whisper large-v3（ASR）
+        │  按 30 秒切片 + batch=4 流式推理
+        │  输出：segment + text（无时间戳）
+        ▼
+[2b] wav2vec2 对齐模型（强制对齐）
+        │  对每个字 / 词精确打上 start / end
+        ▼
+transcript.raw.json（带词级时间戳）</div>
+
+  <div class="callout">
+    <strong>💡 重要细节：</strong>这里的转写结果还<strong>不知道是谁说的</strong>，只是"谁在什么时间说了什么字"。说话人标签要等到阶段 3 之后才贴上去。
+  </div>
+</div>
+
+<!-- 阶段 3 -->
+<div class="stage" style="border-top: 4px solid var(--orange);">
+  <div class="stage-header">
+    <span class="stage-badge">阶段 3/4</span>
+    <h2 class="stage-title">👥 说话人识别（diarize）</h2>
+    <span class="stage-file">src/meetingflow/diarize.py</span>
+  </div>
+
+  <div class="in-out">
+    <div class="box">
+      <div class="label-tag">输入</div>
+      <div><code>audio-16k-mono.wav</code> + <code>HF_TOKEN</code>（Hugging Face 令牌）</div>
+    </div>
+    <div class="arrow-big">➡️</div>
+    <div class="box">
+      <div class="label-tag">输出</div>
+      <div><code>speakers.json</code> —— 一系列"时间段 → 发言人标签"片段</div>
+    </div>
+  </div>
+
+  <h4><span class="label what">做什么</span></h4>
+  <p>回答一个问题：<strong>这段录音里，到底有几个人在说话？每个人在哪个时间区间？</strong></p>
+  <p>pyannote 模型会输出像下面这样的片段列表：</p>
+
+  <div class="example-audio">
+    <pre>[
+  {"start":  0.0,  "end": 12.4, "speaker": "SPEAKER_00"},
+  {"start": 12.4, "end": 35.1, "speaker": "SPEAKER_01"},
+  {"start": 35.1, "end": 51.8, "speaker": "SPEAKER_00"},
+  {"start": 51.8, "end": 68.5, "speaker": "SPEAKER_02"},
+  ...
+]</pre>
+  </div>
+
+  <h4><span class="label why">为什么要做</span></h4>
+  <div class="why-box">
+    <p>这是会议场景的核心需求 —— 没做这一步，输出就只是"一个人自言自语 60 分钟"的连续文字稿。做了之后，才能区分"谁说了什么"，会议纪要才有意义。</p>
+    <ul>
+      <li><strong>🧩 与阶段 2 互补：</strong>阶段 2 告诉你"12.45 秒开始说了'我们今天主要讨论'"，阶段 3 告诉你"12.4–35.1 秒是 SPEAKER_01 在说话"。两者合并才得到"SPEAKER_01 在 12.45 秒说：我们今天主要讨论"。</li>
+      <li><strong>🔍 不依赖人脸 / 名字：</strong>只用<strong>声纹特征</strong>区分 —— 即便两个人声音很像也能分开；输出只是 <code>SPEAKER_00/01/02</code>，真实姓名由用户事后在 <code>speaker-map.toml</code> 里手动标注。</li>
+      <li><strong>🤖 模型自带的四步流水线：</strong>pyannote 内部做 ① 语音活动检测 → ② 统计说话人数 → ③ 提取每段声纹 → ④ 聚类归组，不用项目自己造轮子。</li>
+      <li><strong>📦 FFmpeg 零拷贝喂数据：</strong>不用 torchaudio 加载（避免后端依赖问题），直接 FFmpeg 解码成 raw float32，再用 <code>torch.frombuffer</code> 零拷贝包装为张量喂给模型。</li>
+    </ul>
+  </div>
+
+  <h4><span class="label how">怎么做</span></h4>
+  <div class="how-box">
+    <p>pyannote 的四步内部流水线 + 时间戳对齐：</p>
+  </div>
+
+  <div class="flow-diagram">audio-16k-mono.wav
+        │
+        │  FFmpeg 解码 → stdout raw float32 bytes
+        ▼
+torch.frombuffer(...) 零拷贝成 [1, samples] 张量
+        │
+        ▼
+pyannote Pipeline({"waveform":..., "sample_rate":16000})
+        │
+        ├─► ① 语音分段（VAD）：把音频切成"有人说话"的片段
+        ├─► ② 统计说话人数
+        ├─► ③ 提取声纹（speaker embedding）
+        └─► ④ 聚类：把声纹相近的片段归到同一个 SPEAKER_XX
+        │
+        ▼
+annotation.itertracks(yield_label=True)
+        │
+        ▼
+speakers.json: [{start, end, speaker}, ...]</div>
+
+  <h4>🧩 阶段 3 之后的关键步骤：把"词"和"说话人"绑在一起</h4>
+  <p>这个绑定动作在 <code>pipeline.py</code> 的 <code>_assign_word_speakers</code> 里完成，它对每个词，找<strong>与这个词时间重叠最多的说话人片段</strong>，然后贴上 <code>speaker</code> 字段，结果存到 <code>transcript.aligned.json</code>。</p>
+  <div class="flow-diagram">transcript.raw.json (words + 时间戳)
+        +
+speakers.json (时间区间 + 说话人)
+        ↓
+对每个 word：找与 [word.start, word.end] 重叠最长的 speaker 段
+        ↓
+word["speaker"] = "SPEAKER_01"
+        ↓
+transcript.aligned.json（带说话人标签的词级转写）</div>
+</div>
+
+<!-- 阶段 4：渲染 -->
+<div class="stage" style="border-top: 4px solid var(--red);">
+  <div class="stage-header">
+    <span class="stage-badge">阶段 4/4</span>
+    <h2 class="stage-title">📄 渲染输出（render）</h2>
+    <span class="stage-file">src/meetingflow/render.py</span>
+  </div>
+
+  <div class="in-out">
+    <div class="box">
+      <div class="label-tag">输入</div>
+      <div><code>transcript.aligned.json</code> + <code>speakers.json</code> + <code>speaker-map.toml</code></div>
+    </div>
+    <div class="arrow-big">➡️</div>
+    <div class="box">
+      <div class="label-tag">输出</div>
+      <div><code>speakers.md</code>、<code>speakers.srt</code> —— 人可直接读的成品</div>
+    </div>
+  </div>
+
+  <h4><span class="label what">做什么</span></h4>
+  <p>把所有数据"排版"成人类可读的格式。这一阶段 <strong>不再调用任何 AI 模型</strong>，纯字符串拼接。</p>
+
+  <div class="example-audio">
+    <div style="color: var(--text-dim);">// 输出示例：speakers.md</div>
+    <pre># 发言人转写
+
+[00:00:12.450] Speaker 1: 我们今天主要讨论一下排期问题
+[00:00:15.820] Speaker 1: 我看了下后端那边的进度
+[00:00:20.100] Speaker 2: 我这边测试环境还有点问题
+[00:00:35.000] Speaker 3: 要不要把联调时间往后挪一天
+...</pre>
+  </div>
+
+  <div class="example-audio">
+    <div style="color: var(--text-dim);">// 输出示例：speakers.srt（字幕格式）</div>
+    <pre>1
+00:00:12,450 --> 00:00:15,820
+Speaker 1: 我们今天主要讨论一下排期问题
+
+2
+00:00:15,820 --> 00:00:20,100
+Speaker 1: 我看了下后端那边的进度
+
+3
+00:00:20,100 --> 00:00:35,000
+Speaker 2: 我这边测试环境还有点问题
+...</pre>
+  </div>
+
+  <h4><span class="label why">为什么要做</span></h4>
+  <div class="why-box">
+    <ul>
+      <li><strong>🎁 多种格式按需选择：</strong>Markdown 适合直接贴笔记、Wiki；SRT 是标准字幕格式，可以导入剪辑软件或字幕播放器。</li>
+      <li><strong>🧠 词级 vs 段级智能取舍：</strong>如果某个段落没有词级说话人标签（异常情况），自动退回"按段找最重叠的说话人"，保证任何阶段产物都能渲染。</li>
+      <li><strong>🔤 名字可后改：</strong>第一遍跑完会生成 <code>speaker-map.toml</code>：</li>
+    </ul>
+    <div class="example-audio">
+      <pre>[speakers]
+"SPEAKER_00" = "Speaker 1"
+"SPEAKER_01" = "Speaker 2"
+"SPEAKER_02" = "Speaker 3"</pre>
+    </div>
+    <p>用户用记事本改成真实姓名后，<strong>无需重新跑模型</strong>，只需 <code>meetingflow render</code> 一条命令就能用新名字重新排版 —— 因为渲染阶段完全不需要模型参与。</p>
+  </div>
+
+  <h4><span class="label how">怎么做</span></h4>
+  <div class="how-box">
+    <p>两个关键算法：</p>
+  </div>
+
+  <div class="flow-diagram">transcript.aligned.json
+        │
+        ▼
+对每个 segment：
+        ├─ 若有 words[] 且每个 word 都有 speaker：
+        │     → 把相邻同 speaker 的词合并成一行
+        │        （避免每个字独占一行）
+        └─ 否则退回段级：
+              → 找与 [segment.start, segment.end] 重叠最长的 speaker
+        │
+        ▼
+按时间排序 + 时间戳格式化 hh:mm:ss.mmm
+        │
+        ├─► speakers.md（用 . 作为小数点）
+        └─► speakers.srt（用 , 作为小数点，符合 SRT 规范）</div>
+</div>
+
+<!-- 端到端串联图 -->
+<h2 style="text-align:center; margin-top: 60px;">🔗 端到端串联：一条录音的完整旅程</h2>
+<div class="stage">
+  <div class="flow-diagram" style="font-size: .95em;">
+OBS 录好的 周会-0721.mkv (700 MB, 48kHz 立体声)
+  │
+  ▼ 阶段 0：探测
+  │   ffprobe → source.json（62 分钟 / 48kHz / 立体声 / Opus）
+  │
+  ▼ 阶段 1：标准化
+  │   ffmpeg 转码 → audio-16k-mono.wav (230 MB, 16kHz 单声道 float32)
+  │
+  ▼ 阶段 2：转写
+  │   Whisper large-v3 → 文字段
+  │   wav2vec2 对齐 → transcript.raw.json（含每个词的时间戳）
+  │
+  ▼ 阶段 3：说话人识别
+  │   pyannote 模型 → speakers.json（每个时间段是哪个 SPEAKER_XX）
+  │   与 transcript.raw.json 合并 → transcript.aligned.json（每个词都贴上 speaker）
+  │
+  ▼ 阶段 4：渲染
+  │   读 speaker-map.toml 把 SPEAKER_XX 替换成真名
+  │   → speakers.md / speakers.srt（人类可读的最终成品）
+  │
+  ▼
+输出文件夹 D:\Meetings\Output\2026-07-22_周会-0721_a3f5c8d2\
+  ├── speakers.md          ✅ 可以直接读
+  ├── speakers.srt         ✅ 可以直接当字幕
+  ├── transcript.raw.json  ✅ 模型原始产物（用于排查 / 重跑）
+  ├── transcript.aligned.json
+  ├── speakers.json
+  ├── audio-16k-mono.wav
+  ├── source.json
+  └── run.jsonl            ✅ 每个阶段的耗时、参数、错误堆栈
+  </div>
+</div>
+
+<!-- 整体设计原则 -->
+<h2 style="text-align:center; margin-top: 60px;">🎯 整体设计原则</h2>
+<div class="stage">
+  <table>
+    <thead>
+      <tr><th>原则</th><th>在代码里如何体现</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><strong>原始录音只读</strong></td>
+        <td>阶段 0 / 1 只读取源文件，从不修改；产物写新路径；阶段 1 用临时文件 + 原子 rename</td>
+      </tr>
+      <tr>
+        <td><strong>幂等可重跑</strong></td>
+        <td>每个阶段都有 <code>fingerprint</code>，参数未变 + 产物存在 → 直接跳过；只有改模型 / 改参数才重跑</td>
+      </tr>
+      <tr>
+        <td><strong>RTX 4060 8GB 串行加载模型</strong></td>
+        <td>每个模型用完 <code>del model; torch.cuda.empty_cache()</code>，绝不同时驻留</td>
+      </tr>
+      <tr>
+        <td><strong>错误尽早暴露</strong></td>
+        <td>阶段 0 启动时立刻检查 FFmpeg / ffprobe；阶段 1 检查 max_volume；阶段 3 启动时检查 HF_TOKEN</td>
+      </tr>
+      <tr>
+        <td><strong>失败可恢复</strong></td>
+        <td>SQLite 记每个阶段状态 + fingerprint；<code>retry &lt;job-id&gt; --from &lt;stage&gt;</code> 可从任意阶段续跑</td>
+      </tr>
+      <tr>
+        <td><strong>本地处理，不上传</strong></td>
+        <td>所有模型本地加载；HF_TOKEN 只用于下载模型权重；音频和文字从不离开本机</td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="callout" style="margin-top: 40px;">
+  <p><strong>🤔 一句话回顾：</strong>MeetingFlow 的"4 阶段"本质是 <strong>先把录音"翻译"成模型认识的样子（标准化），再让两个 AI 模型接力（听写 + 分人），最后用纯文本处理把结果"排版"成人能直接看的样子</strong>。</p>
+  <p><strong>🔍 想知道更多？</strong>看 <code>docs/V1-详细开发方案.md</code> 了解整体架构，看 <code>src/meetingflow/pipeline.py</code> 的 <code>process()</code> 函数（281 行起）看代码是如何把它们串起来的。</p>
+</div>
+
+<footer>
+  <p>📘 MeetingFlow 四阶段可视化讲解 · 基于 src/meetingflow/ 实际源码（截至 main 分支）</p>
+  <p>📂 项目文档：<code>docs/V1-详细开发方案.md</code> · <code>docs/Windows 会议录音转写与总结流水线项目方案.md</code></p>
+</footer>
+
+</div>
+</body>
+</html>

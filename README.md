@@ -2,7 +2,13 @@
 
 MeetingFlow 是一套面向 Windows 的本地会议音频处理流水线：OBS 负责录音，MeetingFlow 负责音频检查、中文转写、发言人区分和 Markdown/SRT 输出。音频和转写内容始终保留在本机。
 
-## V1 当前状态
+## 当前架构状态
+
+V1 是已完成的历史实现，采用 WhisperX、词级强制对齐和 pyannote。当前目标为 V2 会议纪要模式流水线：采用本地 SenseVoiceSmall + FSMN-VAD + CAM++，不再需要词级强制对齐、Hugging Face Token 或 VPN。V2 仍在开发与验收中，尚未合并到 main；当前代码的操作说明仍以 V1 为准。
+
+V2 的架构、离线约束、验收标准和回退边界见 [docs/V2-tech-design-wayfinder-pipeline.md](docs/V2-tech-design-wayfinder-pipeline.md)。V1 的历史设计见 [docs/V1-tech-design-meetingflow.md](docs/V1-tech-design-meetingflow.md)。
+
+## V1 历史实现（当前 main）
 
 V1 的功能开发已完成，可以告一段落并进入日常使用与验收阶段。当前已实现：
 
@@ -80,4 +86,4 @@ uv run meetingflow --config config/meetingflow.toml render <job-id>
 - 模型任务串行执行，进程锁落实单 GPU 串行，避免 RTX 4060 8GB 显存被同时占用。
 - 阶段产物按参数指纹复用：模型、语言、说话人数等参数变化时只重跑受影响阶段及下游。
 - 不提交真实会议录音、访问令牌、模型缓存、本机配置或运行数据。
-- Agent 开发约束见 [AGENTS.md](AGENTS.md)，详细设计见 [docs/V1-详细开发方案.md](docs/V1-详细开发方案.md)。
+- Agent 开发约束见 [AGENTS.md](AGENTS.md)，当前目标设计见 [docs/V2-tech-design-wayfinder-pipeline.md](docs/V2-tech-design-wayfinder-pipeline.md)，全部文档索引见 [docs/README.md](docs/README.md)。

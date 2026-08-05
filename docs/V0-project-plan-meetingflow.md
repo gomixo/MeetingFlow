@@ -1,3 +1,21 @@
+---
+title: MeetingFlow 项目方案（V0 立项稿）
+slug: V0-project-plan-meetingflow
+version: V0
+doc_type: project-plan
+status: superseded
+scope: project
+audited_commit: null
+branch: null
+source: codex-self
+created: 2026-07-20
+last_reviewed: 2026-07-22
+supersedes: null
+superseded_by: V1-tech-design-meetingflow
+related:
+  - V1-tech-design-meetingflow
+---
+
 ## 一、项目定位
 
 本项目建设一套运行在 Windows 本地的“会议音频处理流水线”。

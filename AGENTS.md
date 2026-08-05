@@ -25,6 +25,7 @@
 - 自有文本文件必须显式使用 `encoding="utf-8"` 读写；二进制文件和第三方进程输出按实际格式处理。
 - Python 标识符、模块名、配置字段和结构化日志字段使用英文。
 - 用户可见的 CLI 提示、错误信息和项目文档使用中文；注释仅在代码无法自解释时添加，并使用中文。
+- `docs/` 下的文档必须使用版次化命名 `<Vn|Rn>-<doc_type>-<描述>.<ext>`（纯 ASCII + 连字符），并在 `.md` 文档开头添加 YAML front matter；`.html` 文档在 `<head>` 内使用 `<meta name="doc:*">` 与 `application/ld+json` 等价表达。新建或重大修订文档前须确认版次与状态（`draft`/`final`/`archived`/`superseded`），字段定义见 [docs/README.md](docs/README.md)。
 
 ## 运行与测试
 
