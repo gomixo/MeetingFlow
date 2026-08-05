@@ -57,6 +57,10 @@ punkt_tab.zip
 *.safetensors
 
 # 工具与系统文件
+.scratch/
+.wayfinder/
+CONTEXT.md
+/docs/公众号文章/
 .zcode/
 .DS_Store
 Desktop.ini

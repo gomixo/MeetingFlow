@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
+import logging
 import sys
 import types
 from pathlib import Path
@@ -13,14 +15,35 @@ from meetingflow.analyze import manifest_hashes, verify_models
 
 
 def _install_fake_funasr(
-    monkeypatch: pytest.MonkeyPatch, calls: dict[str, dict[str, object]], sentence_info: list | None = None, full_text: str = "raw-text"
+    monkeypatch: pytest.MonkeyPatch,
+    calls: dict[str, dict[str, object]],
+    sentence_info: list | None = None,
+    full_text: str = "raw-text",
+    *,
+    emit_terminal_noise: bool = False,
+    emit_progress: bool = False,
 ) -> None:
     class FakeAutoModel:
         def __init__(self, **kwargs: object) -> None:
             calls["automodel"] = dict(kwargs)
+            if emit_terminal_noise:
+                print("funasr version: test")
+                logging.getLogger("funasr").info("Loading pretrained params")
+                logging.getLogger("funasr").warning("trust_remote_code: False")
 
         def generate(self, **kwargs: object) -> list[dict[str, object]]:
             calls["generate"] = dict(kwargs)
+            if emit_progress:
+                from funasr.auto.auto_model import tqdm
+
+                progress = tqdm(total=2, colour="blue", dynamic_ncols=True)
+                progress.update(1)
+                progress.set_description("rtf_avg: 0.5")
+                progress.update(1)
+            if emit_terminal_noise:
+                logging.getLogger("funasr").error("Missing punc_model, which is required by spk_model.")
+                logging.getLogger("funasr").error("No timestamp found in ASR result. Speaker diarization relies on timestamps.")
+                logging.getLogger("funasr").error("real model error")
             return [
                 {
                     "text": full_text,
@@ -36,6 +59,24 @@ def _install_fake_funasr(
     postprocess.rich_transcription_postprocess = lambda s: s.replace("<|t|>", "")  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "funasr", funasr)
     monkeypatch.setitem(sys.modules, "funasr.utils.postprocess_utils", postprocess)
+    auto = types.ModuleType("funasr.auto")
+    auto_model = types.ModuleType("funasr.auto.auto_model")
+
+    class NoisyProgress:
+        def __init__(self, *, total: int, **_kwargs: object) -> None:
+            self.total = total
+            self.current = 0
+
+        def update(self, amount: int) -> None:
+            self.current += amount
+            print(f"external progress {self.current}/{self.total}", file=sys.stderr)
+
+        def set_description(self, _description: str) -> None:
+            return
+
+    auto_model.tqdm = NoisyProgress  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "funasr.auto", auto)
+    monkeypatch.setitem(sys.modules, "funasr.auto.auto_model", auto_model)
 
     fake_torch = types.ModuleType("torch")
     fake_cuda = types.ModuleType("torch.cuda")
@@ -98,6 +139,53 @@ def test_analyze_passes_local_dirs_and_frozen_automodel_options(monkeypatch: pyt
     assert calls["automodel"]["disable_update"] is True
     assert calls["automodel"]["trust_remote_code"] is False
     assert calls["automodel"]["vad_kwargs"] == {"max_single_segment_time": 15000}
+
+
+def test_analyze_hides_normal_funasr_noise_but_keeps_real_errors(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls: dict[str, dict[str, object]] = {}
+    _install_fake_funasr(monkeypatch, calls, emit_terminal_noise=True)
+    settings = _analysis_settings(tmp_path)
+    _install_fake_anchors(monkeypatch, settings)  # type: ignore[arg-type]
+    wav = tmp_path / "a.wav"
+    wav.write_bytes(b"data")
+    terminal = io.StringIO()
+    handler = logging.StreamHandler(terminal)
+    root = logging.getLogger()
+    root.addHandler(handler)
+    root.setLevel(logging.INFO)
+    try:
+        analyze_module.analyze(wav, settings)  # type: ignore[arg-type]
+    finally:
+        root.removeHandler(handler)
+
+    visible = capsys.readouterr().out + terminal.getvalue()
+    assert "funasr version" not in visible
+    assert "Loading pretrained params" not in visible
+    assert "trust_remote_code" not in visible
+    assert "Missing punc_model" not in visible
+    assert "No timestamp found in ASR result" not in visible
+    assert "real model error" in visible
+
+
+def test_analyze_uses_one_in_place_terminal_progress_line(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls: dict[str, dict[str, object]] = {}
+    _install_fake_funasr(monkeypatch, calls, emit_progress=True)
+    settings = _analysis_settings(tmp_path)
+    _install_fake_anchors(monkeypatch, settings)  # type: ignore[arg-type]
+    wav = tmp_path / "a.wav"
+    wav.write_bytes(b"data")
+
+    analyze_module.analyze(wav, settings)  # type: ignore[arg-type]
+
+    visible = capsys.readouterr().err
+    assert "external progress" not in visible
+    assert visible.count("\n") == 1
+    assert "\r  语音分析       │" in visible
+    assert visible.endswith("│ 100.0%\n")
 
 
 def test_analyze_passes_frozen_generate_options(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

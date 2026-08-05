@@ -8,11 +8,15 @@ from __future__ import annotations
 
 import gc
 import hashlib
+import io
 import json
+import logging
 import os
 import re
 import shutil
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager, redirect_stdout
 from pathlib import Path
 from typing import TypedDict
 
@@ -141,24 +145,39 @@ def analyze(audio_path: Path, settings: AnalysisSettings) -> dict[str, object]:
     verify_models(settings)
     _register_dll_directories()
     import torch
-    from funasr import AutoModel
-    from funasr.utils.postprocess_utils import rich_transcription_postprocess
 
     if not torch.cuda.is_available():
         raise ValueError("未检测到 CUDA GPU。当前方案按 RTX 4060 冻结，不支持 CPU 回退。")
     options = {**AUTOMODEL_OPTIONS, "vad_kwargs": dict(AUTOMODEL_OPTIONS["vad_kwargs"])}  # type: ignore[dict-item]
-    model = AutoModel(
-        model=str(settings["sensevoice_dir"]),
-        vad_model=str(settings["vad_dir"]),
-        spk_model=str(settings["spk_dir"]),
-        **options,  # type: ignore[arg-type]
-    )
-    try:
-        result: object = model.generate(input=str(audio_path), **GENERATE_OPTIONS)  # type: ignore[arg-type]
-    finally:
-        del model
-        gc.collect()
-        torch.cuda.empty_cache()
+    with _quiet_funasr_output():
+        from funasr import AutoModel
+        from funasr.auto import auto_model as funasr_auto_model
+        from funasr.utils.postprocess_utils import rich_transcription_postprocess
+
+        original_tqdm = funasr_auto_model.tqdm
+        funasr_auto_model.tqdm = _SingleLineProgress
+        _progress("语音分析", 0)
+        succeeded = False
+        try:
+            model = AutoModel(
+                model=str(settings["sensevoice_dir"]),
+                vad_model=str(settings["vad_dir"]),
+                spk_model=str(settings["spk_dir"]),
+                **options,  # type: ignore[arg-type]
+            )
+            try:
+                result: object = model.generate(input=str(audio_path), **GENERATE_OPTIONS)  # type: ignore[arg-type]
+                succeeded = True
+            finally:
+                del model
+                gc.collect()
+                torch.cuda.empty_cache()
+        finally:
+            funasr_auto_model.tqdm = original_tqdm
+            if succeeded:
+                _progress("语音分析", 100, finish=True)
+            else:
+                print(file=sys.stderr)
     if not isinstance(result, list) or not result or not isinstance(result[0], dict):
         raise RuntimeError("SenseVoice 未返回预期结果")
     item = result[0]
@@ -193,6 +212,63 @@ def analyze(audio_path: Path, settings: AnalysisSettings) -> dict[str, object]:
         "sentences": sentences,
         "review_flags": review_flags,
     }
+
+
+class _FunASRTerminalFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        if record.levelno < logging.ERROR:
+            return False
+        return record.getMessage() not in {
+            "Missing punc_model, which is required by spk_model.",
+            "No timestamp found in ASR result. Speaker diarization relies on timestamps.",
+        }
+
+
+class _SingleLineProgress:
+    def __init__(self, *, total: int, **_kwargs: object) -> None:
+        self.total = max(total, 1)
+        self.current = 0
+
+    def update(self, amount: int = 1) -> None:
+        self.current = min(self.total, self.current + amount)
+        _progress("语音分析", self.current * 100 / self.total)
+
+    def set_description(self, _description: str) -> None:
+        return
+
+
+def _progress(stage: str, percent: float, *, finish: bool = False) -> None:
+    value = max(0.0, min(100.0, percent))
+    width = 20
+    filled = round(width * value / 100)
+    print(
+        f"\r  {stage:<10} │{'■' * filled}{'·' * (width - filled)}│ {value:5.1f}%",
+        end="\n" if finish else "",
+        file=sys.stderr,
+        flush=True,
+    )
+
+
+@contextmanager
+def _quiet_funasr_output() -> Iterator[None]:
+    root = logging.getLogger()
+    terminal_filter = _FunASRTerminalFilter()
+    handlers = list(root.handlers)
+    temporary_handler: logging.Handler | None = None
+    if not handlers:
+        temporary_handler = logging.StreamHandler()
+        root.addHandler(temporary_handler)
+        handlers.append(temporary_handler)
+    for handler in handlers:
+        handler.addFilter(terminal_filter)
+    try:
+        with redirect_stdout(io.StringIO()):
+            yield
+    finally:
+        for handler in handlers:
+            handler.removeFilter(terminal_filter)
+        if temporary_handler is not None:
+            root.removeHandler(temporary_handler)
 
 
 def _detect_repetition_flags(text: str) -> list[str]:
