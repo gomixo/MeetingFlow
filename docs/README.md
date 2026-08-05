@@ -46,6 +46,8 @@ related: [V2-tech-design-wayfinder-pipeline, V2-project-review-wayfinder-accepta
 
 机器可读验收报告：[三场景回归](V2-project-review-wayfinder-three-scenario.json)、[零网络探针](V2-project-review-wayfinder-offline.json)。
 
+> 公众号文章相关素材（发布版、初稿、大纲、配图与上传脚本）保存在本机 `docs/公众号文章/` 子目录，不纳入 Git 或本文档索引。
+
 ## 文档关联关系
 
 ```
