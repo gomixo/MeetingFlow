@@ -42,6 +42,8 @@ related: []
 | V1 | project-review | final | [`V1-review-project-postfix.md`](V1-review-project-postfix.md) | 修复后项目审查报告 |
 | V1 | visualization | final | [`V1-visualization-4-stage-pipeline.html`](V1-visualization-4-stage-pipeline.html) | 四阶段流水线可视化讲解 |
 
+> 公众号文章相关素材（发布版、初稿、大纲、配图与上传脚本）保存在本机 `docs/公众号文章/` 子目录，不纳入 Git 或本文档索引。
+
 ## 文档关联关系
 
 ```
