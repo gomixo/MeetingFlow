@@ -27,17 +27,13 @@ _MEDIA_SUFFIXES = {".aac", ".flac", ".m4a", ".mka", ".mkv", ".mp3", ".mp4", ".wa
 
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-    logging.getLogger("whisperx.vads.pyannote").setLevel(logging.WARNING)
-    logging.getLogger("lightning.pytorch.utilities.migration").setLevel(logging.WARNING)
     warnings.filterwarnings("ignore", message=".*TensorFloat-32.*", category=UserWarning)
-    warnings.filterwarnings("ignore", message=".*degrees of freedom.*", category=UserWarning)
     warnings.filterwarnings(
         "ignore",
         message="Passing `gradient_checkpointing` to a config initialization is deprecated.*",
         category=UserWarning,
         module=r"transformers\.configuration_utils",
     )
-    warnings.filterwarnings("ignore", message="The given buffer is not writable.*", category=UserWarning)
     parser = argparse.ArgumentParser(prog="meetingflow", description="本地会议音频转写")
     parser.add_argument("--config", type=Path, help="TOML 配置文件路径")
     commands = parser.add_subparsers(dest="command")

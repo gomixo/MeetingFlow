@@ -1,0 +1,121 @@
+{
+  "auto_check": "三场景自动指标（不包含人工核听；整段遗漏/幻觉需人耳判定）",
+  "context": {
+    "reviewed_commit": "88d439202f5b0bfdc67d9aad41bc541e7efed5b8",
+    "worktree_dirty": true,
+    "worktree_sha256": "c1cf87cb6b6de43bbca74065047fd66d3ebb123c30781e7b93054da64b6e79f4",
+    "untracked_files": [
+      "docs/README.md",
+      "docs/V0-project-plan-meetingflow.md",
+      "docs/V1-audit-chatgpt-static.md",
+      "docs/V1-diagnostic-transcription-quality.md",
+      "docs/V1-tech-design-meetingflow.md",
+      "docs/V2-project-review-wayfinder-acceptance.md",
+      "scripts/prepare-models.py",
+      "scripts/verify-offline.py",
+      "scripts/verify-three-scenario.py",
+      "src/meetingflow/analyze.py",
+      "tests/test_analyze_contract.py",
+      "tests/test_verification_scripts.py"
+    ],
+    "funasr": "1.3.27",
+    "modelscope": "1.39.1",
+    "frozen_manifest_anchors": {
+      "sensevoice": "30a155e57ed3b59f2fde45746e5dc20eaa03d410747ef14071f9481f53935fc2",
+      "vad": "945028ecf1f721765b0a5d5cce4f3c4a85ee5a191477dbd88686b4cfd1626674",
+      "speaker": "647df6a5368efc281936415f6b08d65e7ac5e97352e80d27d231bffefdc7b63b"
+    },
+    "frozen_automodel_options": {
+      "vad_kwargs": {
+        "max_single_segment_time": 15000
+      },
+      "spk_mode": "vad_segment",
+      "device": "cuda:0",
+      "disable_update": true,
+      "trust_remote_code": false
+    },
+    "frozen_generate_options": {
+      "language": "zh",
+      "use_itn": true,
+      "batch_size_s": 60,
+      "merge_vad": true,
+      "merge_length_s": 10
+    }
+  },
+  "scenes": {
+    "normal": {
+      "scene": "normal",
+      "title": "日常场景（完整会议）",
+      "audio_sha256": "580d79dfb758bbe0d7372b33fc978bfbc8d3d6396fe2d66e994850cc05307e61",
+      "audio_bytes": 95412316,
+      "proto_chars": 7428,
+      "proto_paragraphs": 61,
+      "new_chars": 7414,
+      "new_paragraphs": 60,
+      "diff_vs_proto": {
+        "proto_chars": 7428,
+        "new_chars": 7414,
+        "char_delta": -14,
+        "common_prefix": 40,
+        "common_suffix": 60,
+        "modified_zone": 7314,
+        "similarity_ppm": 982078
+      },
+      "output_dir": "D:\\MeetingFlow-Acceptance\\Output\\2026-08-05_normal_580d79df",
+      "review_flags": [],
+      "speaker_count": 4,
+      "speaker_segments_count": 60,
+      "passed": true
+    },
+    "multi": {
+      "scene": "multi",
+      "title": "多人压力场景（01:30:00–01:40:00）",
+      "audio_sha256": "b709616fa6472717d79418e9fef226badfe2f56d85064aff347332d5acb63d7d",
+      "audio_bytes": 19200078,
+      "proto_chars": 3403,
+      "proto_paragraphs": 27,
+      "new_chars": 3399,
+      "new_paragraphs": 26,
+      "diff_vs_proto": {
+        "proto_chars": 3403,
+        "new_chars": 3399,
+        "char_delta": -4,
+        "common_prefix": 1114,
+        "common_suffix": 48,
+        "modified_zone": 2237,
+        "similarity_ppm": 998236
+      },
+      "output_dir": "D:\\MeetingFlow-Acceptance\\Output\\2026-08-05_multi_b709616f",
+      "review_flags": [],
+      "speaker_count": 5,
+      "speaker_segments_count": 26,
+      "passed": true
+    },
+    "difficult": {
+      "scene": "difficult",
+      "title": "困难场景（01:30:00–01:38:55）",
+      "audio_sha256": "4b46acdbfd23964a5d7e79a42dfeb1baea360c5ac89d8ee6ccc4c80680fa05ab",
+      "audio_bytes": 16843086,
+      "proto_chars": 2345,
+      "proto_paragraphs": 18,
+      "new_chars": 2345,
+      "new_paragraphs": 18,
+      "diff_vs_proto": {
+        "proto_chars": 2345,
+        "new_chars": 2345,
+        "char_delta": 0,
+        "common_prefix": 202,
+        "common_suffix": 405,
+        "modified_zone": 1738,
+        "similarity_ppm": 998721
+      },
+      "output_dir": "D:\\MeetingFlow-Acceptance\\Output\\2026-08-05_difficult_4b46acdb",
+      "review_flags": [],
+      "speaker_count": 3,
+      "speaker_segments_count": 18,
+      "passed": true
+    }
+  },
+  "passed": true,
+  "minimum_text_similarity": 0.95
+}

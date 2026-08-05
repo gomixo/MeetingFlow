@@ -2,23 +2,47 @@
 
 MeetingFlow 是一套面向 Windows 的本地会议音频处理流水线：OBS 负责录音，MeetingFlow 负责音频检查、中文转写、发言人区分和 Markdown/SRT 输出。音频和转写内容始终保留在本机。
 
-## V1 当前状态
+## 当前状态
 
-V1 的功能开发已完成，可以告一段落并进入日常使用与验收阶段。当前已实现：
+当前分支实现的是 V2 Wayfinder 链路，正在完成合并前验收。已实现：
 
 - 中文终端菜单，可处理 Inbox 最新文件或拖入/粘贴的单个文件；
 - FFmpeg/ffprobe 媒体检查，包括格式、时长、采样率、声道、码率、静音与削波提示；
-- WhisperX 本地中文及中英混合转写和时间对齐；
-- pyannote 本地发言人区分，可配置说话人数范围；
+- 本地 SenseVoiceSmall + FSMN-VAD + CAM++ 单次语音分析，产出段级文字和主要发言轮次；
 - 终端内选择历史任务和发言人，并输入中文姓名重新渲染；
 - 默认生成带发言人的 Markdown，可切换为 SRT 或两者；
 - SHA-256 任务去重、SQLite 阶段状态、失败重试、原子写入和 JSONL 日志；
 - Windows FFmpeg/PyTorch DLL 路径注册和单 GPU 串行模型执行；
+- 完全离线运行，不依赖 Hugging Face、ModelScope 或 Token；
 - 旧版平铺任务兼容，原始录音始终只读。
 
-自动化测试覆盖输出布局、格式偏好、中文姓名、旧任务兼容、最新文件选择、媒体探测和 FFmpeg 解码；本机也已有多份真实录音完成 `probe → transcribe → diarize` 全流程。发布前只需用最新终端菜单再做一次代表性会议人工验收，检查转写质量、发言人区分和最终 Markdown；这属于效果验收，不是缺失的 V1 功能。
+## V2 Wayfinder 链路
 
-V1 明确不包含后台目录监听、会议总结、GUI、实时字幕、Web 服务或音频上传。
+V1 流水线已用 Wayfinder 选型替换为 `SenseVoiceSmall + FSMN-VAD + CAM++` 单次本地分析，代号 V2。Wayfinder 盲评比较确认 SenseVoice 在日常与困难两场胜出、Turbo 在多人压力场胜出，当前 large-v3 基线因连续重复失控淘汰。
+
+**自动检查（程序判定）**：
+
+- `analyze()` 全空结果视为失败（保证任务不静默产出空转录）。
+- 持久化分析产物损坏（缺字段、字段值不合法、路径穿越、多余文件）→ 加载阶段拒绝并提示 `--from transcribe` 重新生成。
+- 重复风险标记：`review_flags: ["repetition"]` 写入产物与 Markdown 头部 "⚠ 存在待人工核听标记"。
+
+**人工核听（必须人耳判定）**：
+
+- 整段遗漏（会议中间清晰发言被漏掉）。
+- 真实重复 vs 模型循环（参会人口吃/强调/列表 vs ASR 失控）。
+- 幻觉内容（无中生有的整段、错位归属）。
+- 主要发言人轮次归属的合理性。
+
+**发布门（合并到 main 前必须完成）**：
+
+- 固定三场景盲评比对（含人工核听四项）— 见 `docs/V2-project-review-wayfinder-acceptance.md`。
+- 零网络探针（`scripts/verify-offline.py`）。
+- 最终运行体积精简环境实测 ≤ 约 6.4 GB。
+- 一票否决人工核听四项签字。
+
+自动化测试和前两项是合并前的必做门；体积与人工核听是合并前必完成项，不是合并后事项。
+
+明确不包含后台目录监听、会议总结、GUI、实时字幕、Web 服务或音频上传。
 
 ## 安装
 
@@ -28,7 +52,19 @@ V1 明确不包含后台目录监听、会议总结、GUI、实时字幕、Web �
 uv sync
 ```
 
-首次进行说话人识别前，须在 Hugging Face 接受 [`speaker-diarization-community-1`](https://huggingface.co/pyannote/speaker-diarization-community-1) 的使用条款，并设置用户环境变量 `HF_TOKEN`，不要把令牌写入配置或仓库。
+## 模型准备
+
+转写与说话人识别使用三个本地版本化模型目录（`[models]` 段），各含 `manifest.json` 全目录 SHA-256 清单，与 `analyze.py` 中 `FROZEN_MANIFEST_HASHES` 信任锚点严格对齐。首次或在新机器上一次性准备：
+
+```powershell
+uv run scripts/prepare-models.py
+# 或自定义根目录：
+uv run scripts/prepare-models.py --root D:/MeetingFlow/Models
+```
+
+该脚本按固定 commit 从 ModelScope 下载 `iic/SenseVoiceSmall`、`iic/speech_fsmn_vad_zh-cn-16k-common-pytorch`、`iic/speech_campplus_sv_zh-cn_16k-common`，生成确定性 manifest（按路径排序、丢弃时间戳、规范序列化），然后调用 `analyze.verify_models` 锚点核对。目录已存在则跳过下载并重新生成 manifest。
+
+日常运行完全离线：启动前校验目录与哈希，缺失或不匹配直接失败，不会回退在线下载，也无需 `HF_TOKEN`。
 
 ## 终端菜单
 
@@ -65,12 +101,13 @@ uv run meetingflow --config config/meetingflow.toml render <job-id>
 为了支持改名、重渲染、去重和失败恢复，以下内部文件保存在 `Work/jobs/<sha256>/`：
 
 - `source.json`：源文件路径、哈希和媒体信息；
-- `audio-16k-mono.wav`：标准化后的 16kHz 单声道中间音频，转写与说话人识别复用；
-- `transcript.raw.json`：模型原始转写；
-- `transcript.aligned.json`：词级说话人分配后的转写，渲染时按词级边界拆分行；
+- `analysis.sensevoice.json`：SenseVoice + FSMN-VAD + CAM++ 的原生分析产物，是后续派生与重渲染的唯一来源；
+- `transcript.raw.json`：从原生分析派生的段级转写，相邻同说话人合并为主要发言轮次；
 - `speakers.json`：说话人时间段；
 - `speaker-map.toml`：说话人标签与姓名映射；
 - `run.jsonl`：阶段、参数、耗时和错误日志。
+
+任务成功后会删除 `audio-16k-mono.wav`，需要重跑模型时从只读原始录音重新标准化。旧版本平铺任务中的 `transcript.aligned.json`（词级说话人分配）仍可读取，但新任务不再生成。
 
 输出格式偏好保存在 `Work/preferences.json`。旧版本平铺在 Output 中的任务无需迁移，仍可改名和重新渲染。
 
@@ -78,6 +115,6 @@ uv run meetingflow --config config/meetingflow.toml render <job-id>
 
 - 原始录音只读，不覆盖、不删除。
 - 模型任务串行执行，进程锁落实单 GPU 串行，避免 RTX 4060 8GB 显存被同时占用。
-- 阶段产物按参数指纹复用：模型、语言、说话人数等参数变化时只重跑受影响阶段及下游。
+- 阶段产物按参数指纹复用：模型清单哈希与冻结参数变化时只重跑受影响阶段及下游。
 - 不提交真实会议录音、访问令牌、模型缓存、本机配置或运行数据。
-- Agent 开发约束见 [AGENTS.md](AGENTS.md)，详细设计见 [docs/V1-详细开发方案.md](docs/V1-详细开发方案.md)。
+- Agent 开发约束见 [AGENTS.md](AGENTS.md)，历史 V1 设计见 [docs/V1-tech-design-meetingflow.md](docs/V1-tech-design-meetingflow.md)，当前验收见 [docs/V2-project-review-wayfinder-acceptance.md](docs/V2-project-review-wayfinder-acceptance.md)。

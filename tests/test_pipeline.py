@@ -11,7 +11,23 @@ import pytest
 
 from meetingflow import audio, pipeline
 from meetingflow.__main__ import _input_path, _latest_media, _menu, _rename_menu
+from meetingflow.analyze import ANALYSIS_FORMAT
 from meetingflow.audio import probe_audio
+
+
+def _fake_model_dirs(tmp_path: Path) -> dict[str, Path]:
+    """三个带空清单的假模型目录，避免测试依赖本机真实模型。"""
+    root = tmp_path / "models"
+    manifest = {"model": "test", "revision": "test", "files": []}
+    dirs: dict[str, Path] = {
+        "sensevoice_dir": root / "sensevoice",
+        "vad_dir": root / "vad",
+        "spk_dir": root / "speaker",
+    }
+    for directory in dirs.values():
+        directory.mkdir(parents=True)
+        (directory / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
+    return dirs
 
 
 def _settings(tmp_path: Path) -> pipeline.Settings:
@@ -19,7 +35,17 @@ def _settings(tmp_path: Path) -> pipeline.Settings:
     settings["inbox"] = tmp_path / "inbox"
     settings["work"] = tmp_path / "work"
     settings["output"] = tmp_path / "output"
+    settings["models"] = _fake_model_dirs(tmp_path)  # type: ignore[assignment]
     return settings
+
+
+def _fake_analysis(text: str = "你好，世界。", speaker: int = 0, start: int = 0, end: int = 1250) -> dict[str, object]:
+    return {
+        "format": ANALYSIS_FORMAT,
+        "text": text,
+        "sentence_info": [{"start": start, "end": end, "spk": speaker, "sentence": text}],
+        "sentences": [{"start": start, "end": end, "speaker": f"SPEAKER_{speaker:02d}", "text": text}],
+    }
 
 
 def _models(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -29,12 +55,7 @@ def _models(monkeypatch: pytest.MonkeyPatch) -> None:
         lambda _: {"format_name": "mp4", "duration_seconds": 2.0, "sample_rate": 48000, "channels": 2, "bit_rate": 128000, "warnings": []},
     )
     monkeypatch.setattr(pipeline, "normalize_audio", _fake_normalize)
-    monkeypatch.setattr(
-        pipeline,
-        "transcribe",
-        lambda _source, _settings: {"language": "zh", "segments": [{"start": 0.0, "end": 1.25, "text": " 你好，世界。 "}]},
-    )
-    monkeypatch.setattr(pipeline, "diarize", lambda _source, _settings: [{"start": 0.0, "end": 1.25, "speaker": "SPEAKER_00"}])
+    monkeypatch.setattr(pipeline, "analyze", lambda _source, _settings: _fake_analysis())
 
 
 def _fake_normalize(_source: Path, destination: Path) -> tuple[Path, float | None]:
@@ -52,14 +73,14 @@ def test_process_keeps_only_selected_outputs_and_internal_artifacts(tmp_path: Pa
 
     assert not result.skipped
     assert {path.name for path in result.output_dir.iterdir()} == {"speakers.md"}
+    # 新链路：无 audio-16k-mono.wav（成功后删除）、无 transcript.aligned.json；新增 analysis.sensevoice.json
     assert {path.name for path in artifact_dir.iterdir()} == {
         "run.jsonl",
         "source.json",
-        "audio-16k-mono.wav",
         "speaker-map.toml",
         "speakers.json",
         "transcript.raw.json",
-        "transcript.aligned.json",
+        "analysis.sensevoice.json",
     }
     assert "Speaker 1: 你好，世界。" in (result.output_dir / "speakers.md").read_text(encoding="utf-8")
     assert pipeline.process(source, settings).skipped
@@ -96,7 +117,7 @@ def test_force_refreshes_existing_formats_and_missing_raw_is_rebuilt(tmp_path: P
     _models(monkeypatch)
     result = pipeline.process(source, settings)
     pipeline.save_output_formats(settings, ("srt",))
-    monkeypatch.setattr(pipeline, "transcribe", lambda _source, _settings: {"segments": [{"start": 0.0, "end": 1.0, "text": "更新内容"}]})
+    monkeypatch.setattr(pipeline, "analyze", lambda _source, _settings: _fake_analysis("更新内容"))
 
     pipeline.process(source, settings, start_stage="probe")
     assert "更新内容" in (result.output_dir / "speakers.md").read_text(encoding="utf-8")
@@ -165,14 +186,19 @@ def test_rename_menu_stays_in_submenus_until_zero(
     source.write_bytes(b"speakers-audio")
     settings = _settings(tmp_path)
     _models(monkeypatch)
-    monkeypatch.setattr(
-        pipeline,
-        "diarize",
-        lambda _source, _settings: [
-            {"start": 0.0, "end": 1.0, "speaker": "SPEAKER_00"},
-            {"start": 1.0, "end": 2.0, "speaker": "SPEAKER_01"},
-        ],
-    )
+
+    def diarize_two(_wav: Path, _settings: object) -> dict[str, object]:
+        return {
+            "format": ANALYSIS_FORMAT,
+            "text": "",
+            "sentence_info": [],
+            "sentences": [
+                {"start": 0, "end": 1000, "speaker": "SPEAKER_00", "text": "甲"},
+                {"start": 1000, "end": 2000, "speaker": "SPEAKER_01", "text": "乙"},
+            ],
+        }
+
+    monkeypatch.setattr(pipeline, "analyze", diarize_two)
     result = pipeline.process(source, settings)
     choices = iter(["x", "1", "9", "1", "", "1", "张三", "2", "李四", "0", "0"])
     monkeypatch.setattr("builtins.input", lambda _: next(choices))
@@ -227,7 +253,7 @@ def test_load_settings_resolves_relative_paths_against_config_dir(tmp_path: Path
     assert settings["output"] == (tmp_path / "Output").resolve()
 
 
-def test_validate_settings_rejects_overlap_and_bad_values(tmp_path: Path) -> None:
+def test_validate_settings_rejects_overlap(tmp_path: Path) -> None:
     base = pipeline.load_settings(None)
     base["inbox"] = tmp_path / "inbox"
     base["work"] = tmp_path / "work"
@@ -236,36 +262,6 @@ def test_validate_settings_rejects_overlap_and_bad_values(tmp_path: Path) -> Non
     overlap = {**base, "work": base["inbox"]}
     with pytest.raises(ValueError, match="互相包含"):
         pipeline.validate_settings(overlap)
-
-    bad_batch = {**base, "transcription": {**base["transcription"], "batch_size": 0}}
-    with pytest.raises(ValueError, match="batch_size"):
-        pipeline.validate_settings(bad_batch)
-
-    bad_speakers = {**base, "diarization": {"min_speakers": 4, "max_speakers": 2}}
-    with pytest.raises(ValueError, match="max_speakers 不能小于"):
-        pipeline.validate_settings(bad_speakers)
-
-    bad_model = {**base, "transcription": {**base["transcription"], "model": ""}}
-    with pytest.raises(ValueError, match="model 不能为空"):
-        pipeline.validate_settings(bad_model)
-
-
-def test_validate_settings_collects_multiple_errors(tmp_path: Path) -> None:
-    base = pipeline.load_settings(None)
-    base["inbox"] = tmp_path / "inbox"
-    base["work"] = tmp_path / "inbox"  # 与 inbox 重叠
-    base["output"] = tmp_path / "output"
-    base["transcription"] = {**base["transcription"], "batch_size": -1, "model": ""}
-    base["diarization"] = {"min_speakers": 5, "max_speakers": 2}
-
-    with pytest.raises(ValueError) as exc_info:
-        pipeline.validate_settings(base)
-
-    message = str(exc_info.value)
-    assert "互相包含" in message
-    assert "batch_size" in message
-    assert "model 不能为空" in message
-    assert "max_speakers 不能小于" in message
 
 
 def test_normalize_audio_raises_on_ffmpeg_failure(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -317,51 +313,19 @@ def test_wait_until_stable_raises_when_file_keeps_changing(tmp_path: Path, monke
         pipeline.wait_until_stable(source, checks=2, interval=0.001, timeout=0.05)
 
 
-def test_asr_options_none_for_defaults() -> None:
-    from meetingflow.transcribe import _asr_options
-
-    settings = {
-        "model": "large-v3",
-        "language": "zh",
-        "compute_type": "int8_float16",
-        "batch_size": 4,
-        "repetition_penalty": 1.0,
-        "no_repeat_ngram_size": 0,
-        "chunk_size": 30,
-    }
-    assert _asr_options(settings) is None
-
-
-def test_asr_options_passed_when_repetition_penalty_changed() -> None:
-    from meetingflow.transcribe import _asr_options
-
-    settings = {
-        "model": "large-v3",
-        "language": "zh",
-        "compute_type": "int8_float16",
-        "batch_size": 4,
-        "repetition_penalty": 1.1,
-        "no_repeat_ngram_size": 3,
-        "chunk_size": 20,
-    }
-    assert _asr_options(settings) == {"repetition_penalty": 1.1, "no_repeat_ngram_size": 3}
-
-
-def test_skip_rebuilds_aligned_when_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_new_pipeline_never_writes_aligned(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     settings = _settings(tmp_path)
     _models(monkeypatch)
     source = tmp_path / "aligned会议.mp4"
     source.write_bytes(b"data")
     result = pipeline.process(source, settings)
     artifact_dir = settings["work"] / "jobs" / result.job_id
-    aligned = artifact_dir / "transcript.aligned.json"
-    assert aligned.is_file()
-    aligned.unlink()
+
+    assert not (artifact_dir / "transcript.aligned.json").is_file()
 
     second = pipeline.process(source, settings)
-
     assert second.skipped
-    assert aligned.is_file()
+    assert not (artifact_dir / "transcript.aligned.json").is_file()
 
 
 def test_render_works_without_ffmpeg(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -376,51 +340,28 @@ def test_render_works_without_ffmpeg(tmp_path: Path, monkeypatch: pytest.MonkeyP
     pipeline.render(result.job_id[:8], settings)
 
 
-def test_validate_settings_rejects_bad_transcription_params(tmp_path: Path) -> None:
-    base = pipeline.load_settings(None)
-    base["inbox"] = tmp_path / "inbox"
-    base["work"] = tmp_path / "work"
-    base["output"] = tmp_path / "output"
-    bad = {**base, "transcription": {**base["transcription"], "chunk_size": 0, "repetition_penalty": -1, "no_repeat_ngram_size": -1}}
+def test_success_deletes_normalized_wav(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _settings(tmp_path)
+    _models(monkeypatch)
+    source = tmp_path / "清理会议.mp4"
+    source.write_bytes(b"data")
+    result = pipeline.process(source, settings)
+    artifact_dir = settings["work"] / "jobs" / result.job_id
 
-    with pytest.raises(ValueError) as exc_info:
-        pipeline.validate_settings(bad)
-
-    message = str(exc_info.value)
-    assert "chunk_size" in message
-    assert "repetition_penalty" in message
-    assert "no_repeat_ngram_size" in message
+    assert not (artifact_dir / "audio-16k-mono.wav").is_file()
 
 
-def test_load_waveform_decodes_wav_to_float32(tmp_path: Path) -> None:
-    source = tmp_path / "tone.wav"
-    subprocess.run(
-        [
-            "ffmpeg",
-            "-v",
-            "error",
-            "-f",
-            "lavfi",
-            "-i",
-            "sine=frequency=1000:duration=0.1",
-            "-ac",
-            "1",
-            "-ar",
-            "16000",
-            "-c:a",
-            "pcm_f32le",
-            str(source),
-        ],
-        check=True,
-    )
-    from meetingflow.diarize import _load_waveform
-    from meetingflow.transcribe import _register_dll_directories
+def test_reprocess_removes_stale_aligned(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _settings(tmp_path)
+    _models(monkeypatch)
+    source = tmp_path / "重跑对齐.mp4"
+    source.write_bytes(b"data")
+    result = pipeline.process(source, settings)
+    artifact_dir = settings["work"] / "jobs" / result.job_id
+    # 模拟遗留旧词级产物
+    (artifact_dir / "transcript.aligned.json").write_text('{"segments": []}', encoding="utf-8")
 
-    _register_dll_directories()
-    import torch
+    pipeline.retry(result.job_id[:8], "diarize", settings)
 
-    waveform = _load_waveform(source, torch)
-
-    assert waveform.shape[0] == 1
-    assert waveform.dtype == torch.float32
-    assert waveform.shape[1] > 0
+    assert not (artifact_dir / "transcript.aligned.json").is_file()
+    assert (artifact_dir / "transcript.raw.json").is_file()

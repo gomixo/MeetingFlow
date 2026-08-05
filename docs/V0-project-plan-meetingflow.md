@@ -1,3 +1,24 @@
+---
+title: MeetingFlow Windows 会议录音流水线项目方案
+slug: V0-project-plan-meetingflow
+version: V0
+doc_type: project-plan
+status: superseded
+scope: project
+audited_commit: null
+branch: null
+source: human
+created: 2026-07-20
+last_reviewed: 2026-08-05
+supersedes: null
+superseded_by: V1-tech-design-meetingflow
+related: [V1-tech-design-meetingflow]
+---
+
+# MeetingFlow Windows 会议录音流水线项目方案
+
+> 历史文档：此方案已被 V1 详细设计取代，其中的总结与旧模型设想不代表当前实现。
+
 ## 一、项目定位
 
 本项目建设一套运行在 Windows 本地的“会议音频处理流水线”。

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.metadata
 import json
 import os
 import re
@@ -16,18 +17,27 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TypedDict
 
+from .analyze import (
+    ANALYSIS_FORMAT,
+    AUTOMODEL_OPTIONS,
+    DERIVE_FORMAT,
+    GENERATE_OPTIONS,
+    AnalysisSettings,
+    SpeakerSegment,
+    analyze,
+    derive_speakers,
+    derive_transcript,
+    manifest_hashes,
+)
 from .audio import ensure_ffmpeg_available, normalize_audio, probe_audio
-from .diarize import DiarizationSettings, SpeakerSegment, diarize
 from .render import render_speakers_markdown, render_speakers_srt
-from .transcribe import TranscriptionSettings, transcribe
 
 
 class Settings(TypedDict):
     inbox: Path
     work: Path
     output: Path
-    transcription: TranscriptionSettings
-    diarization: DiarizationSettings
+    models: AnalysisSettings
 
 
 @dataclass(frozen=True)
@@ -51,28 +61,17 @@ def load_settings(path: Path | None) -> Settings:
         with path.open("rb") as file:
             values = tomllib.load(file)
     base = path.resolve().parent if path is not None else None
-    section = values.get("transcription", {})
-    diarization = values.get("diarization", {})
-    if not isinstance(section, dict):
-        raise ValueError("配置中的 transcription 必须是表")
-    if not isinstance(diarization, dict):
-        raise ValueError("配置中的 diarization 必须是表")
+    models = values.get("models", {})
+    if not isinstance(models, dict):
+        raise ValueError("配置中的 models 必须是表")
     settings: Settings = {
         "inbox": _resolve_path(str(values.get("inbox", "D:/Meetings/Inbox")), base),
         "work": _resolve_path(str(values.get("work", "D:/Meetings/Work")), base),
         "output": _resolve_path(str(values.get("output", "D:/Meetings/Output")), base),
-        "transcription": {
-            "model": str(section.get("model", "large-v3")),
-            "language": str(section.get("language", "zh")),
-            "compute_type": str(section.get("compute_type", "int8_float16")),
-            "batch_size": int(section.get("batch_size", 4)),
-            "repetition_penalty": float(section.get("repetition_penalty", 1.0)),
-            "no_repeat_ngram_size": int(section.get("no_repeat_ngram_size", 0)),
-            "chunk_size": int(section.get("chunk_size", 30)),
-        },
-        "diarization": {
-            "min_speakers": _optional_int(diarization.get("min_speakers")),
-            "max_speakers": _optional_int(diarization.get("max_speakers")),
+        "models": {
+            "sensevoice_dir": _resolve_path(str(models.get("sensevoice", "D:/Meetings/Models/sensevoice-small-7bf4524")), base),
+            "vad_dir": _resolve_path(str(models.get("vad", "D:/Meetings/Models/fsmn-vad-f9a8b82")), base),
+            "spk_dir": _resolve_path(str(models.get("speaker", "D:/Meetings/Models/campplus-a045b2a")), base),
         },
     }
     validate_settings(settings)
@@ -90,27 +89,6 @@ def validate_settings(settings: Settings) -> None:
     ):
         if _is_same_or_ancestor(first, second) or _is_same_or_ancestor(second, first):
             errors.append(f"{first_name} 与 {second_name} 不能互相包含")
-    transcription = settings["transcription"]
-    if not transcription["model"]:
-        errors.append("transcription.model 不能为空")
-    if not transcription["language"]:
-        errors.append("transcription.language 不能为空")
-    if transcription["batch_size"] <= 0:
-        errors.append("transcription.batch_size 必须大于 0")
-    if transcription["repetition_penalty"] <= 0:
-        errors.append("transcription.repetition_penalty 必须大于 0")
-    if transcription["no_repeat_ngram_size"] < 0:
-        errors.append("transcription.no_repeat_ngram_size 不能为负数")
-    if transcription["chunk_size"] <= 0:
-        errors.append("transcription.chunk_size 必须大于 0")
-    diarization = settings["diarization"]
-    min_speakers, max_speakers = diarization["min_speakers"], diarization["max_speakers"]
-    if min_speakers is not None and min_speakers <= 0:
-        errors.append("diarization.min_speakers 必须大于 0")
-    if max_speakers is not None and max_speakers <= 0:
-        errors.append("diarization.max_speakers 必须大于 0")
-    if min_speakers is not None and max_speakers is not None and max_speakers < min_speakers:
-        errors.append("diarization.max_speakers 不能小于 min_speakers")
     if errors:
         raise ValueError("配置无效：\n- " + "\n- ".join(errors))
 
@@ -212,28 +190,28 @@ def _normalize_fingerprint() -> str:
     return _fingerprint({"codec": "pcm_f32le", "sample_rate": 16000, "channels": 1})
 
 
-def _transcription_fingerprint(settings: TranscriptionSettings) -> str:
+def _transcription_fingerprint(settings: AnalysisSettings) -> str:
     return _fingerprint(
         {
-            "model": settings["model"],
-            "language": settings["language"],
-            "compute_type": settings["compute_type"],
-            "batch_size": settings["batch_size"],
-            "repetition_penalty": settings["repetition_penalty"],
-            "no_repeat_ngram_size": settings["no_repeat_ngram_size"],
-            "chunk_size": settings["chunk_size"],
+            "format": ANALYSIS_FORMAT,
+            "funasr": _package_version("funasr"),
+            "modelscope": _package_version("modelscope"),
+            "manifests": manifest_hashes(settings),
+            "automodel": AUTOMODEL_OPTIONS,
+            "generate": GENERATE_OPTIONS,
         }
     )
 
 
-def _diarization_fingerprint(settings: DiarizationSettings) -> str:
-    return _fingerprint(
-        {
-            "model": "pyannote/speaker-diarization-community-1",
-            "min_speakers": settings["min_speakers"],
-            "max_speakers": settings["max_speakers"],
-        }
-    )
+def _diarization_fingerprint() -> str:
+    return _fingerprint({"format": DERIVE_FORMAT, "spk_mode": AUTOMODEL_OPTIONS["spk_mode"]})
+
+
+def _package_version(name: str) -> str:
+    try:
+        return importlib.metadata.version(name)
+    except importlib.metadata.PackageNotFoundError:
+        return "missing"
 
 
 def _fingerprint(payload: dict[str, object]) -> str:
@@ -273,21 +251,22 @@ def _all_fingerprints_match(database: sqlite3.Connection, job_id: str, settings:
     return (
         _fingerprint_matches(database, job_id, "probe", _probe_fingerprint())
         and _fingerprint_matches(database, job_id, "normalize", _normalize_fingerprint())
-        and _fingerprint_matches(database, job_id, "transcribe", _transcription_fingerprint(settings["transcription"]))
-        and _fingerprint_matches(database, job_id, "diarize", _diarization_fingerprint(settings["diarization"]))
+        and _fingerprint_matches(database, job_id, "transcribe", _transcription_fingerprint(settings["models"]))
+        and _fingerprint_matches(database, job_id, "diarize", _diarization_fingerprint())
     )
 
 
 def process(source: Path, settings: Settings, start_stage: str | None = None) -> ProcessResult:
     if start_stage is not None and start_stage not in _STAGE_ORDER:
         raise ValueError(f"start_stage 只能是 {', '.join(_STAGE_ORDER)} 之一")
-    ensure_ffmpeg_available()
     source = source.expanduser().resolve()
     if not source.is_file():
         raise ValueError(f"找不到输入文件：{source}")
     print(f"\n开始处理：{source.name}")
     job_id = _sha256(source)
     settings["work"].mkdir(parents=True, exist_ok=True)
+    # 用单元素列表持有"当前阶段"，供 _run_full_pipeline 更新并由外层 except 读取以标记 stage=failed。
+    stage_holder: list[str] = ["probe"]
     with _file_lock(settings["work"] / ".gpu.lock", "另一个 MeetingFlow 正在运行，请等待其完成或关闭后重试。"):
         database = _open_database(settings["work"] / "meetingflow.db")
         try:
@@ -302,7 +281,6 @@ def process(source: Path, settings: Settings, start_stage: str | None = None) ->
                 and reusable
                 and _all_fingerprints_match(database, job_id, settings)
             ):
-                _rebuild_aligned_if_missing(artifact_dir)
                 _render_outputs(artifact_dir, output_dir, output_formats(settings), include_existing=True)
                 _job(database, job_id, source, output_dir, "succeeded")
                 _log(artifact_dir, "job_skipped", job_id=job_id)
@@ -311,140 +289,183 @@ def process(source: Path, settings: Settings, start_stage: str | None = None) ->
             artifact_dir.mkdir(parents=True, exist_ok=True)
             _job(database, job_id, source, output_dir, "running")
             _log(artifact_dir, "job_started", job_id=job_id)
-            rerun_active = False
-            stage = "probe"
             try:
-                source_path = artifact_dir / "source.json"
-                started = time.monotonic()
-                _stage(database, job_id, stage, "running")
-                if _should_rerun(
-                    stage,
-                    start_stage,
-                    rerun_active,
-                    source_path.is_file(),
-                    _fingerprint_matches(database, job_id, stage, _probe_fingerprint()),
-                ):
-                    rerun_active = True
-                    probe = probe_audio(source)
-                    _atomic_json(
-                        source_path,
-                        {
-                            "path": str(source),
-                            "sha256": job_id,
-                            "size": source.stat().st_size,
-                            "mtime": source.stat().st_mtime,
-                            "media": probe,
-                        },
-                    )
+                if start_stage == "diarize":
+                    # retry --from diarize：仅基于已有原生分析重新派生与渲染，绝不重跑 GPU，也不动上游。
+                    # 缺少分析产物或转录指纹与冻结不符时，要求从 transcribe 重试（模型已变更或产物缺失）。
+                    # 该入口不依赖 FFmpeg：只读 JSON + 渲染。
+                    stage_holder[0] = "diarize"
+                    _read_analysis(artifact_dir)  # 缺失/格式异常直接抛出明确错误
+                    transcribe_fp = _transcription_fingerprint(settings["models"])
+                    if not _fingerprint_matches(database, job_id, "transcribe", transcribe_fp):
+                        raise ValueError(
+                            "原生分析产物与当前模型配置不符（转录指纹变更），retry --from diarize 无法重跑 GPU 模型。"
+                            "请执行 retry <job-id> --from transcribe 重新生成分析产物。"
+                        )
+                    _run_diarize_derive(artifact_dir, output_dir, settings, database, job_id)
                 else:
-                    print("阶段 0/4 · 复用媒体探测")
-                    probe = json.loads(source_path.read_text(encoding="utf-8")).get("media")
-                    if not isinstance(probe, dict):
-                        raise ValueError("媒体探测产物损坏。请执行 retry <job-id> --from probe 重新生成。")
-                _write_fingerprint(database, job_id, stage, _probe_fingerprint())
-                _stage(database, job_id, stage, "succeeded")
-                _log(artifact_dir, "stage_succeeded", stage=stage, elapsed_seconds=round(time.monotonic() - started, 3))
-                wav_path = artifact_dir / "audio-16k-mono.wav"
-                stage = "normalize"
-                started = time.monotonic()
-                _stage(database, job_id, stage, "running")
-                if _should_rerun(
-                    stage,
-                    start_stage,
-                    rerun_active,
-                    wav_path.is_file(),
-                    _fingerprint_matches(database, job_id, stage, _normalize_fingerprint()),
-                ):
-                    rerun_active = True
-                    print("阶段 1/4 · 标准化音频")
-                    _, max_volume = normalize_audio(source, wav_path)
-                    _atomic_json(
-                        source_path,
-                        {
-                            "path": str(source),
-                            "sha256": job_id,
-                            "size": source.stat().st_size,
-                            "mtime": source.stat().st_mtime,
-                            "media": probe,
-                            "max_volume_db": max_volume,
-                        },
-                    )
-                else:
-                    print("阶段 1/4 · 复用已有标准化音频")
-                _write_fingerprint(database, job_id, stage, _normalize_fingerprint())
-                _stage(database, job_id, stage, "succeeded")
-                _log(artifact_dir, "stage_succeeded", stage=stage, elapsed_seconds=round(time.monotonic() - started, 3))
-                raw_path = artifact_dir / "transcript.raw.json"
-                stage = "transcribe"
-                started = time.monotonic()
-                _stage(database, job_id, stage, "running", json.dumps(settings["transcription"], ensure_ascii=False))
-                if _should_rerun(
-                    stage,
-                    start_stage,
-                    rerun_active,
-                    raw_path.is_file(),
-                    _fingerprint_matches(database, job_id, stage, _transcription_fingerprint(settings["transcription"])),
-                ):
-                    rerun_active = True
-                    transcript = transcribe(wav_path, settings["transcription"])
-                else:
-                    print("阶段 2/4 · 复用已有转写")
-                    try:
-                        transcript = json.loads(raw_path.read_text(encoding="utf-8"))
-                    except json.JSONDecodeError as error:
-                        raise ValueError("转写产物损坏。请执行 retry <job-id> --from transcribe 重新生成。") from error
-                _atomic_json(raw_path, transcript)
-                _write_fingerprint(database, job_id, stage, _transcription_fingerprint(settings["transcription"]))
-                _stage(database, job_id, stage, "succeeded")
-                _log(
-                    artifact_dir,
-                    "stage_succeeded",
-                    stage=stage,
-                    elapsed_seconds=round(time.monotonic() - started, 3),
-                    parameters=settings["transcription"],
-                )
-                speakers_path = artifact_dir / "speakers.json"
-                stage = "diarize"
-                started = time.monotonic()
-                _stage(database, job_id, stage, "running", json.dumps(settings["diarization"], ensure_ascii=False))
-                if _should_rerun(
-                    stage,
-                    start_stage,
-                    rerun_active,
-                    speakers_path.is_file(),
-                    _fingerprint_matches(database, job_id, stage, _diarization_fingerprint(settings["diarization"])),
-                ):
-                    rerun_active = True
-                    speakers = diarize(wav_path, settings["diarization"])
-                    _speaker_names(speakers, artifact_dir / "speaker-map.toml")
-                    _atomic_json(speakers_path, {"segments": speakers})
-                else:
-                    print("阶段 3/4 · 复用已有说话人识别")
-                speakers = _read_speakers(artifact_dir)
-                aligned_path = artifact_dir / "transcript.aligned.json"
-                if rerun_active or not aligned_path.is_file():
-                    transcript = _assign_word_speakers(transcript, speakers)
-                    _atomic_json(aligned_path, transcript)
-                _render_outputs(artifact_dir, output_dir, output_formats(settings), include_existing=True)
-                _write_fingerprint(database, job_id, stage, _diarization_fingerprint(settings["diarization"]))
-                _stage(database, job_id, stage, "succeeded")
-                _log(
-                    artifact_dir,
-                    "stage_succeeded",
-                    stage=stage,
-                    elapsed_seconds=round(time.monotonic() - started, 3),
-                    parameters=settings["diarization"],
-                )
+                    # 完整流水线：需要 FFmpeg（媒体探测 + 标准化）。
+                    ensure_ffmpeg_available()
+                    _run_full_pipeline(database, job_id, source, output_dir, artifact_dir, settings, start_stage, stage_holder)
             except Exception:
-                _stage(database, job_id, stage, "failed")
+                _stage(database, job_id, stage_holder[0], "failed")
                 _job(database, job_id, source, output_dir, "failed")
-                _log(artifact_dir, "job_failed", job_id=job_id, stage=stage, traceback=traceback.format_exc())
+                _log(artifact_dir, "job_failed", job_id=job_id, stage=stage_holder[0], traceback=traceback.format_exc())
                 raise
             _job(database, job_id, source, output_dir, "succeeded")
+            _cleanup_wav(artifact_dir)
             _log(artifact_dir, "job_succeeded", job_id=job_id)
             return ProcessResult(job_id, output_dir, False)
         finally:
             database.close()
+
+
+def _run_full_pipeline(
+    database: sqlite3.Connection,
+    job_id: str,
+    source: Path,
+    output_dir: Path,
+    artifact_dir: Path,
+    settings: Settings,
+    start_stage: str | None,
+    stage_holder: list[str],
+) -> None:
+    """完整四阶段流水线：probe → normalize → transcribe → diarize。stage_holder 报告当前阶段供外层失败收尾。"""
+    rerun_active = False
+    stage_holder[0] = "probe"
+    source_path = artifact_dir / "source.json"
+    started = time.monotonic()
+    _stage(database, job_id, stage_holder[0], "running")
+    probe_rerun = _should_rerun(
+        stage_holder[0],
+        start_stage,
+        rerun_active,
+        source_path.is_file(),
+        _fingerprint_matches(database, job_id, stage_holder[0], _probe_fingerprint()),
+    )
+    if probe_rerun:
+        rerun_active = True
+        probe = probe_audio(source)
+        _atomic_json(
+            source_path,
+            {
+                "path": str(source),
+                "sha256": job_id,
+                "size": source.stat().st_size,
+                "mtime": source.stat().st_mtime,
+                "media": probe,
+            },
+        )
+    else:
+        print("阶段 0/4 · 复用媒体探测")
+        probe = json.loads(source_path.read_text(encoding="utf-8")).get("media")
+        if not isinstance(probe, dict):
+            raise ValueError("媒体探测产物损坏。请执行 retry <job-id> --from probe 重新生成。")
+    _write_fingerprint(database, job_id, stage_holder[0], _probe_fingerprint())
+    _stage(database, job_id, stage_holder[0], "succeeded")
+    _log(artifact_dir, "stage_succeeded", stage=stage_holder[0], elapsed_seconds=round(time.monotonic() - started, 3))
+    wav_path = artifact_dir / "audio-16k-mono.wav"
+    analysis_path = artifact_dir / "analysis.sensevoice.json"
+    raw_path = artifact_dir / "transcript.raw.json"
+    speakers_path = artifact_dir / "speakers.json"
+    normalize_fp = _normalize_fingerprint()
+    transcribe_fp = _transcription_fingerprint(settings["models"])
+    stage_holder[0] = "normalize"
+    started = time.monotonic()
+    _stage(database, job_id, stage_holder[0], "running")
+    normalize_fingerprint_match = _fingerprint_matches(database, job_id, stage_holder[0], normalize_fp)
+    # 标准化契约变化属于转录输入变化，必须使语音分析及下游失效。
+    transcribe_rerun = _should_rerun(
+        "transcribe",
+        start_stage,
+        rerun_active or not normalize_fingerprint_match,
+        analysis_path.is_file(),
+        _fingerprint_matches(database, job_id, "transcribe", transcribe_fp),
+    )
+    normalize_rerun = _should_rerun(
+        stage_holder[0],
+        start_stage,
+        rerun_active,
+        wav_path.is_file(),
+        normalize_fingerprint_match,
+    )
+    # 标准化 WAV 只被语音分析消费；分析可复用且 WAV 已清理时不重建。
+    if normalize_rerun and (transcribe_rerun or wav_path.is_file()):
+        rerun_active = True
+        print("阶段 1/4 · 标准化音频")
+        _, max_volume = normalize_audio(source, wav_path)
+        _atomic_json(
+            source_path,
+            {
+                "path": str(source),
+                "sha256": job_id,
+                "size": source.stat().st_size,
+                "mtime": source.stat().st_mtime,
+                "media": probe,
+                "max_volume_db": max_volume,
+            },
+        )
+    elif wav_path.is_file():
+        print("阶段 1/4 · 复用已有标准化音频")
+    else:
+        print("阶段 1/4 · 跳过标准化（复用已有语音分析）")
+    _write_fingerprint(database, job_id, stage_holder[0], normalize_fp)
+    _stage(database, job_id, stage_holder[0], "succeeded")
+    _log(artifact_dir, "stage_succeeded", stage=stage_holder[0], elapsed_seconds=round(time.monotonic() - started, 3))
+    analysis_parameters = _analysis_parameters(settings["models"])
+    stage_holder[0] = "transcribe"
+    started = time.monotonic()
+    _stage(database, job_id, stage_holder[0], "running", json.dumps(analysis_parameters, ensure_ascii=False))
+    if _should_rerun(
+        stage_holder[0],
+        start_stage,
+        rerun_active,
+        analysis_path.is_file(),
+        _fingerprint_matches(database, job_id, stage_holder[0], transcribe_fp),
+    ):
+        rerun_active = True
+        print("阶段 2/4 · 语音分析（转写 + 说话人）")
+        analysis = analyze(wav_path, settings["models"])
+        _atomic_json(analysis_path, analysis)
+        # 重复风险标记：analyze() 不写 run.jsonl，由 pipeline 在落盘后记录。
+        for flag in list(analysis.get("review_flags", [])):
+            _log(artifact_dir, "repetition_flagged", reason=flag)
+    else:
+        print("阶段 2/4 · 复用已有语音分析")
+    _write_fingerprint(database, job_id, stage_holder[0], transcribe_fp)
+    _stage(database, job_id, stage_holder[0], "succeeded")
+    _log(
+        artifact_dir,
+        "stage_succeeded",
+        stage=stage_holder[0],
+        elapsed_seconds=round(time.monotonic() - started, 3),
+        parameters=analysis_parameters,
+    )
+    stage_holder[0] = "diarize"
+    started = time.monotonic()
+    derive_fp = _diarization_fingerprint()
+    _stage(database, job_id, stage_holder[0], "running", json.dumps({"format": DERIVE_FORMAT}, ensure_ascii=False))
+    if _should_rerun(
+        stage_holder[0],
+        start_stage,
+        rerun_active,
+        raw_path.is_file() and speakers_path.is_file(),
+        _fingerprint_matches(database, job_id, stage_holder[0], derive_fp),
+    ):
+        print("阶段 3/4 · 派生发言轮次")
+        _derive_artifacts(artifact_dir)
+    else:
+        print("阶段 3/4 · 复用已有发言轮次")
+    _render_outputs(artifact_dir, output_dir, output_formats(settings), include_existing=True)
+    _write_fingerprint(database, job_id, stage_holder[0], derive_fp)
+    _stage(database, job_id, stage_holder[0], "succeeded")
+    _log(
+        artifact_dir,
+        "stage_succeeded",
+        stage=stage_holder[0],
+        elapsed_seconds=round(time.monotonic() - started, 3),
+        parameters={"format": DERIVE_FORMAT},
+    )
 
 
 def wait_until_stable(source: Path, *, checks: int = 3, interval: float = 1.0, timeout: float = 60.0) -> Path:
@@ -586,26 +607,69 @@ def _read_speakers(artifact_dir: Path) -> list[SpeakerSegment]:
     return [item for item in payload["segments"] if isinstance(item, dict) and {"start", "end", "speaker"} <= item.keys()]
 
 
-def _assign_word_speakers(transcript: dict[str, object], speakers: list[SpeakerSegment]) -> dict[str, object]:
-    """按词级时间戳为每个词分配说话人，等价于 WhisperX assign_word_speakers，但基于 list[SpeakerSegment] 避免 pyannote Annotation 依赖。"""
-    segments = transcript.get("segments")
-    if not isinstance(segments, list):
-        return transcript
-    for segment in segments:
-        if not isinstance(segment, dict):
-            continue
-        words = segment.get("words")
-        if not isinstance(words, list):
-            continue
-        for word in words:
-            if isinstance(word, dict) and "start" in word and "end" in word:
-                word["speaker"] = _speaker_for_word(float(word["start"]), float(word["end"]), speakers)
-    return transcript
+def _analysis_parameters(settings: AnalysisSettings) -> dict[str, object]:
+    return {
+        "sensevoice_dir": str(settings["sensevoice_dir"]),
+        "vad_dir": str(settings["vad_dir"]),
+        "spk_dir": str(settings["spk_dir"]),
+        "automodel": AUTOMODEL_OPTIONS,
+        "generate": GENERATE_OPTIONS,
+    }
 
 
-def _speaker_for_word(start: float, end: float, speakers: list[SpeakerSegment]) -> str | None:
-    best = max(speakers, key=lambda item: max(0.0, min(end, item["end"]) - max(start, item["start"])), default=None)
-    return best["speaker"] if best is not None and min(end, best["end"]) > max(start, best["start"]) else None
+def _read_analysis(artifact_dir: Path) -> dict[str, object]:
+    path = artifact_dir / "analysis.sensevoice.json"
+    try:
+        analysis = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError as error:
+        raise ValueError("缺少原生分析产物。请执行 retry <job-id> --from transcribe 重新生成。") from error
+    except json.JSONDecodeError as error:
+        raise ValueError("原生分析产物损坏。请执行 retry <job-id> --from transcribe 重新生成。") from error
+    if not isinstance(analysis, dict) or not isinstance(analysis.get("sentences"), list):
+        raise ValueError("原生分析产物格式异常。请执行 retry <job-id> --from transcribe 重新生成。")
+    return analysis
+
+
+def _derive_artifacts(artifact_dir: Path) -> None:
+    analysis = _read_analysis(artifact_dir)
+    _atomic_json(artifact_dir / "transcript.raw.json", derive_transcript(analysis))
+    speakers = derive_speakers(analysis)
+    _speaker_names(speakers, artifact_dir / "speaker-map.toml")
+    _atomic_json(artifact_dir / "speakers.json", {"segments": speakers})
+    # 新链路不再生成词级产物；清除旧 aligned，避免渲染读到过期内容。
+    (artifact_dir / "transcript.aligned.json").unlink(missing_ok=True)
+
+
+def _run_diarize_derive(artifact_dir: Path, output_dir: Path, settings: Settings, database: sqlite3.Connection, job_id: str) -> None:
+    """diarize 阶段：从原生分析派生段级转写与说话人轮次并渲染；无 GPU。
+
+    用于 retry --from diarize 短路流程（必读分析→派生→渲染）。正常流水线仍以自身 stage 块执行，
+    保留按指纹复用的优化（详见 process() 内 diarize 阶段）。
+    """
+    stage = "diarize"
+    started = time.monotonic()
+    derive_fp = _diarization_fingerprint()
+    _stage(database, job_id, stage, "running", json.dumps({"format": DERIVE_FORMAT}, ensure_ascii=False))
+    print("阶段 3/4 · 派生发言轮次")
+    _derive_artifacts(artifact_dir)
+    _render_outputs(artifact_dir, output_dir, output_formats(settings), include_existing=True)
+    _write_fingerprint(database, job_id, stage, derive_fp)
+    _stage(database, job_id, stage, "succeeded")
+    _log(
+        artifact_dir,
+        "stage_succeeded",
+        stage=stage,
+        elapsed_seconds=round(time.monotonic() - started, 3),
+        parameters={"format": DERIVE_FORMAT},
+    )
+
+
+def _cleanup_wav(artifact_dir: Path) -> None:
+    """任务成功后删除标准化 WAV；需要重跑模型时从原始录音重新生成。删除失败不影响任务结果。"""
+    try:
+        (artifact_dir / "audio-16k-mono.wav").unlink(missing_ok=True)
+    except OSError as error:
+        _log(artifact_dir, "wav_cleanup_failed", error=str(error))
 
 
 def _render_outputs(artifact_dir: Path, output_dir: Path, formats: tuple[str, ...], include_existing: bool = False) -> None:
@@ -625,26 +689,13 @@ def _render_outputs(artifact_dir: Path, output_dir: Path, formats: tuple[str, ..
 
 
 def _load_transcript(artifact_dir: Path) -> dict[str, object]:
-    """优先读词级说话人分配后的 aligned，缺失时回退到 raw。"""
+    """新任务读段级 raw；旧任务的词级 aligned 若存在则优先读，保留旧任务读取能力。"""
     aligned = artifact_dir / "transcript.aligned.json"
     if aligned.is_file():
         with aligned.open("r", encoding="utf-8") as file:
             return json.load(file)
     with (artifact_dir / "transcript.raw.json").open("r", encoding="utf-8") as file:
         return json.load(file)
-
-
-def _rebuild_aligned_if_missing(artifact_dir: Path) -> None:
-    """整体复用前若词级产物缺失，用 raw + speakers 重建，避免静默退回段级渲染。"""
-    aligned_path = artifact_dir / "transcript.aligned.json"
-    if aligned_path.is_file():
-        return
-    with (artifact_dir / "transcript.raw.json").open("r", encoding="utf-8") as file:
-        transcript = json.load(file)
-    if not isinstance(transcript, dict):
-        raise ValueError("任务的转写产物格式异常")
-    speakers = _read_speakers(artifact_dir)
-    _atomic_json(aligned_path, _assign_word_speakers(transcript, speakers))
 
 
 def _open_database(path: Path) -> sqlite3.Connection:
@@ -689,10 +740,6 @@ def _sha256(source: Path) -> str:
         while chunk := file.read(1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
-
-
-def _optional_int(value: object) -> int | None:
-    return None if value is None else int(value)
 
 
 def _speaker_names(speakers: list[SpeakerSegment], path: Path) -> dict[str, str]:

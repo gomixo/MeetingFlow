@@ -1,3 +1,20 @@
+---
+title: 转录质量问题诊断与改进建议
+slug: V1-diagnostic-transcription-quality
+version: V1
+doc_type: diagnostic
+status: final
+scope: project
+audited_commit: null
+branch: main
+source: codex
+created: 2026-07-22
+last_reviewed: 2026-08-05
+supersedes: null
+superseded_by: null
+related: [V1-tech-design-meetingflow, V2-project-review-wayfinder-acceptance]
+---
+
 # 转录质量问题诊断与改进建议
 
 ## 1. 背景

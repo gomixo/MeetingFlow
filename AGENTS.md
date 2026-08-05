@@ -15,8 +15,8 @@
 - Python 3.12，使用 `uv` 管理环境和锁文件。
 - Python 函数和方法必须写完整的参数与返回值类型；避免无理由使用 `Any`。
 - 优先标准库：`argparse`、`pathlib`、`sqlite3`、`tomllib`、`logging`。
-- 音频探测与转换调用 FFmpeg/ffprobe；转写与说话人识别复用 WhisperX/pyannote。
-- Windows 启动时先将 FFmpeg `bin` 和 PyTorch `lib` 注册为 DLL 搜索目录，再导入 TorchCodec/CTranslate2。
+- 音频探测与转换调用 FFmpeg/ffprobe；转写与说话人识别使用 FunASR（SenseVoiceSmall + FSMN-VAD + CAM++）本地模型，单次综合分析。
+- Windows 启动时先将 FFmpeg `bin` 和 PyTorch `lib` 注册为 DLL 搜索目录，再导入 Torch/FunASR。
 - RTX 4060 8GB 上模型串行加载；不要引入并行 GPU 任务。
 - 新依赖必须解决当前需求；不得为未来功能预建抽象层。
 

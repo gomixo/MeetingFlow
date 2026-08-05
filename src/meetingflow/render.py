@@ -1,13 +1,22 @@
 from __future__ import annotations
 
-from .diarize import SpeakerSegment
+from .analyze import SpeakerSegment
 
 
 def render_speakers_markdown(transcript: dict[str, object], speakers: list[SpeakerSegment], names: dict[str, str]) -> str:
     lines = ["# 发言人转写", ""]
+    flags = _review_flags(transcript)
+    if flags:
+        lines.append(f"> ⚠ 存在待人工核听标记：{', '.join(flags)}")
+        lines.append("")
     for start, _end, name, text in _iter_rows(transcript, speakers, names):
         lines.append(f"[{_timestamp(start, '.')}] {name}: {text}")
     return "\n".join(lines) + "\n"
+
+
+def _review_flags(transcript: dict[str, object]) -> list[str]:
+    raw = transcript.get("review_flags", [])
+    return [str(flag) for flag in raw] if isinstance(raw, list) else []
 
 
 def render_speakers_srt(transcript: dict[str, object], speakers: list[SpeakerSegment], names: dict[str, str]) -> str:

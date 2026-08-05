@@ -1,4 +1,23 @@
+---
+title: MeetingFlow V1 详细开发方案
+slug: V1-tech-design-meetingflow
+version: V1
+doc_type: tech-design
+status: superseded
+scope: project
+audited_commit: null
+branch: null
+source: human
+created: 2026-07-20
+last_reviewed: 2026-08-05
+supersedes: V0-project-plan-meetingflow
+superseded_by: V2-project-review-wayfinder-acceptance
+related: [V1-audit-chatgpt-static, V1-diagnostic-transcription-quality]
+---
+
 # MeetingFlow V1 详细开发方案
+
+> 历史文档：其中的 WhisperX、pyannote 与词级对齐链路已由 V2 Wayfinder 方案取代。
 
 > 日期：2026-07-20
 >

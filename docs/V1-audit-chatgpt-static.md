@@ -1,3 +1,20 @@
+---
+title: MeetingFlow V1 代码审计结果
+slug: V1-audit-chatgpt-static
+version: V1
+doc_type: code-audit
+status: final
+scope: project
+audited_commit: eb84e39
+branch: main
+source: chatgpt
+created: 2026-07-22
+last_reviewed: 2026-08-05
+supersedes: null
+superseded_by: null
+related: [V1-tech-design-meetingflow]
+---
+
 # MeetingFlow 代码审计结果
 
 审计范围为 `main` 分支最新提交 `eb84e39`，包括核心代码、测试、启动脚本、依赖配置和项目规则。此次以**静态代码审计**为主，未在你的 Windows、RTX 4060 和真实会议文件环境中执行完整动态测试。

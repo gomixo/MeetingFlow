@@ -2,22 +2,9 @@ inbox = "D:/Meetings/Inbox"
 work = "D:/Meetings/Work"
 output = "D:/Meetings/Output"
 
-[transcription]
-model = "large-v3"
-language = "zh"
-compute_type = "int8_float16"
-batch_size = 4
-# 以下参数用于控制重复幻觉，默认值保持当前行为；建议用代表性片段 A/B 核听后再固化。
-# repetition_penalty = 1.1
-# no_repeat_ngram_size = 3
-# chunk_size = 20
-
-[diarization]
-# 可选：仅在已知人数时设置，能提高区分稳定性。
-# min_speakers = 2
-# max_speakers = 4
-
-# 离线模式与隐私：建议在用户环境变量中设置（不要写入本文件或仓库）：
-#   HF_HUB_OFFLINE=1
-#   TRANSFORMERS_OFFLINE=1
-#   PYANNOTE_METRICS_ENABLED=0
+# 三个版本化本地模型目录，各含 manifest.json 全目录 SHA-256 清单。
+# 缺失或不匹配会直接失败，不会回退在线下载；日常运行完全离线，无需 HF_TOKEN。
+[models]
+sensevoice = "D:/Meetings/Models/sensevoice-small-7bf4524"
+vad = "D:/Meetings/Models/fsmn-vad-f9a8b82"
+speaker = "D:/Meetings/Models/campplus-a045b2a"
