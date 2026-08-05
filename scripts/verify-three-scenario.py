@@ -144,8 +144,9 @@ def _build_context() -> dict[str, object]:
     repository = Path(__file__).resolve().parents[1]
     try:
         commit = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True, cwd=repository).strip()
-        status = subprocess.check_output(["git", "status", "--porcelain"], text=True, cwd=repository)
-        diff = subprocess.check_output(["git", "diff", "--binary", "HEAD"], cwd=repository)
+    exclusions = [f":(exclude){path}" for path in sorted(EVIDENCE_REPORTS)]
+    status = subprocess.check_output(["git", "status", "--porcelain", "--", ".", *exclusions], text=True, cwd=repository)
+    diff = subprocess.check_output(["git", "diff", "--binary", "HEAD", "--", ".", *exclusions], cwd=repository)
         untracked_output = subprocess.check_output(["git", "ls-files", "--others", "--exclude-standard", "-z"], cwd=repository).decode(
             "utf-8"
         )
