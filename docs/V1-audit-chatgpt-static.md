@@ -1,5 +1,5 @@
 ---
-title: MeetingFlow V1 代码审计结果
+title: ChatGPT 对 MeetingFlow V1 的代码审计结果
 slug: V1-audit-chatgpt-static
 version: V1
 doc_type: code-audit
@@ -8,11 +8,14 @@ scope: project
 audited_commit: eb84e39
 branch: main
 source: chatgpt
-created: 2026-07-22
-last_reviewed: 2026-08-05
+created: 2026-07-21
+last_reviewed: 2026-07-22
 supersedes: null
 superseded_by: null
-related: [V1-tech-design-meetingflow]
+related:
+  - R1-changelog-bugs-and-perf
+  - V1-review-project-postfix
+  - V1-diagnostic-transcription-quality
 ---
 
 # MeetingFlow 代码审计结果

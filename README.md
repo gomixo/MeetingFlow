@@ -4,7 +4,7 @@ MeetingFlow 是一套面向 Windows 的本地会议音频处理流水线：OBS �
 
 ## 当前状态
 
-当前分支实现的是 V2 Wayfinder 链路，正在完成合并前验收。已实现：
+当前实现是已完成验收的 V2 Wayfinder 链路。已实现：
 
 - 中文终端菜单，可处理 Inbox 最新文件或拖入/粘贴的单个文件；
 - FFmpeg/ffprobe 媒体检查，包括格式、时长、采样率、声道、码率、静音与削波提示；
@@ -117,4 +117,4 @@ uv run meetingflow --config config/meetingflow.toml render <job-id>
 - 模型任务串行执行，进程锁落实单 GPU 串行，避免 RTX 4060 8GB 显存被同时占用。
 - 阶段产物按参数指纹复用：模型清单哈希与冻结参数变化时只重跑受影响阶段及下游。
 - 不提交真实会议录音、访问令牌、模型缓存、本机配置或运行数据。
-- Agent 开发约束见 [AGENTS.md](AGENTS.md)，历史 V1 设计见 [docs/V1-tech-design-meetingflow.md](docs/V1-tech-design-meetingflow.md)，当前验收见 [docs/V2-project-review-wayfinder-acceptance.md](docs/V2-project-review-wayfinder-acceptance.md)。
+- Agent 开发约束见 [AGENTS.md](AGENTS.md)，当前设计见 [docs/V2-tech-design-wayfinder-pipeline.md](docs/V2-tech-design-wayfinder-pipeline.md)，验收见 [docs/V2-project-review-wayfinder-acceptance.md](docs/V2-project-review-wayfinder-acceptance.md)，全部文档见 [docs/README.md](docs/README.md)。

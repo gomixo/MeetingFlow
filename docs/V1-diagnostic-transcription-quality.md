@@ -1,5 +1,5 @@
 ---
-title: 转录质量问题诊断与改进建议
+title: MeetingFlow 转录质量问题诊断与改进建议
 slug: V1-diagnostic-transcription-quality
 version: V1
 doc_type: diagnostic
@@ -7,12 +7,14 @@ status: final
 scope: project
 audited_commit: null
 branch: main
-source: codex
-created: 2026-07-22
-last_reviewed: 2026-08-05
+source: codex-self
+created: 2026-07-21
+last_reviewed: 2026-07-22
 supersedes: null
 superseded_by: null
-related: [V1-tech-design-meetingflow, V2-project-review-wayfinder-acceptance]
+related:
+  - V1-audit-chatgpt-static
+  - R1-changelog-bugs-and-perf
 ---
 
 # 转录质量问题诊断与改进建议
