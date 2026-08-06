@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from meetingflow import audio, pipeline
-from meetingflow.__main__ import _input_path, _latest_media, _menu, _rename_menu
+from meetingflow.__main__ import _inbox_media, _input_path, _latest_media, _menu, _rename_menu, _select_inbox_media
 from meetingflow.analyze import ANALYSIS_FORMAT
 from meetingflow.audio import probe_audio
 
@@ -170,6 +170,25 @@ def test_latest_media_and_dragged_path(tmp_path: Path) -> None:
     (tmp_path / "empty").mkdir()
     with pytest.raises(ValueError, match="Inbox 中没有"):
         _latest_media(tmp_path / "empty")
+
+
+def test_inbox_picker_lists_latest_six_and_supports_wrapped_arrow_selection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    files = [inbox / f"会议-{index}.mp3" for index in range(7)]
+    for index, path in enumerate(files):
+        path.write_bytes(b"audio")
+        os.utime(path, (index, index))
+    (inbox / "说明.txt").write_text("ignore", encoding="utf-8")
+
+    assert _inbox_media(inbox) == list(reversed(files[1:]))
+    keys = iter(["\xe0", "H", "\r"])
+    monkeypatch.setattr("meetingflow.__main__._read_key", lambda: next(keys))
+    assert _select_inbox_media(inbox) == files[1]
+    monkeypatch.setattr("meetingflow.__main__._read_key", lambda: "3")
+    assert _select_inbox_media(inbox) == files[4]
 
 
 def test_menu_rejects_invalid_choice_and_exits(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:

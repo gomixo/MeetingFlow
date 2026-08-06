@@ -6,7 +6,7 @@ MeetingFlow 是一套面向 Windows 的本地会议音频处理流水线：OBS �
 
 当前实现是已完成验收的 V2 Wayfinder 链路。已实现：
 
-- 中文终端菜单，可处理 Inbox 最新文件或拖入/粘贴的单个文件；
+- 中文终端菜单，可处理 Inbox 最新文件、从 Inbox 最近 6 个文件中选择，或拖入/粘贴单个文件；
 - FFmpeg/ffprobe 媒体检查，包括格式、时长、采样率、声道、码率、静音与削波提示；
 - 本地 SenseVoiceSmall + FSMN-VAD + CAM++ 单次语音分析，产出段级文字和主要发言轮次；
 - 终端内选择历史任务和发言人，并输入中文姓名重新渲染；
@@ -74,12 +74,13 @@ uv run scripts/prepare-models.py --root D:/MeetingFlow/Models
 uv run meetingflow --config config/meetingflow.toml
 ```
 
-菜单提供四项操作：
+菜单提供五项操作：
 
 1. 处理 Inbox 中修改时间最新的音频或视频；
-2. 处理拖入终端或粘贴路径的文件；
-3. 选择已完成任务和发言人，连续修改多个中文姓名；发言人列表按 `0` 返回任务列表，任务列表按 `0` 返回主菜单；
-4. 设置输出 Markdown、SRT 或两者，默认只输出 Markdown。
+2. 从 Inbox 中按修改时间倒序显示最近 6 个音视频文件，使用上下键或编号选择；
+3. 处理拖入终端或粘贴路径的文件；
+4. 选择已完成任务和发言人，连续修改多个中文姓名；发言人列表按 `0` 返回任务列表，任务列表按 `0` 返回主菜单；
+5. 设置输出 Markdown、SRT 或两者，默认只输出 Markdown。
 
 也可以把一个文件直接拖到 `run.bat`，或继续使用适合脚本调用的命令：
 
