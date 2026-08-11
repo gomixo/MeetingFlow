@@ -69,7 +69,7 @@ def _menu(settings: Settings) -> None:
     while True:
         formats = "+".join(item.upper() for item in output_formats(settings))
         print(
-            f"\nMeetingFlow（当前输出：{formats}）\n1. 转写 Inbox 中最新文件\n2. 转写拖入或粘贴的文件\n3. 修改发言人姓名\n4. 设置输出格式\n0. 退出"
+            f"\nMeetingFlow（当前输出：{formats}）\n1. 转写 Inbox 中最新文件\n2. 从 Inbox 选择文件开始转写\n3. 转写拖入或粘贴的文件\n4. 修改发言人姓名\n5. 设置输出格式\n0. 退出"
         )
         choice = input("请选择：").strip()
         if choice == "0":
@@ -82,14 +82,22 @@ def _menu(settings: Settings) -> None:
                 wait_until_stable(source)
                 _print_process(process(source, settings))
             elif choice == "2":
+                source = _select_inbox_media(settings["inbox"])
+                if source is None:
+                    continue
+                print(f"已选择：{source}")
+                print("正在确认文件已写入完成...")
+                wait_until_stable(source)
+                _print_process(process(source, settings))
+            elif choice == "3":
                 value = input("请拖入文件或粘贴完整路径：").strip()
                 _print_process(process(_input_path(value), settings))
-            elif choice == "3":
-                _rename_menu(settings)
             elif choice == "4":
+                _rename_menu(settings)
+            elif choice == "5":
                 _formats_menu(settings)
             else:
-                print("无效选项，请输入 0—4。", file=sys.stderr)
+                print("无效选项，请输入 0—5。", file=sys.stderr)
         except (OSError, ValueError) as error:
             print(f"操作失败：{error}", file=sys.stderr)
         except Exception:
@@ -98,12 +106,57 @@ def _menu(settings: Settings) -> None:
 
 
 def _latest_media(inbox: Path) -> Path:
+    return _inbox_media(inbox, limit=1)[0]
+
+
+def _inbox_media(inbox: Path, *, limit: int = 6) -> list[Path]:
     if not inbox.is_dir():
         raise ValueError(f"Inbox 文件夹不存在：{inbox}")
     files = [path for path in inbox.iterdir() if path.is_file() and path.suffix.lower() in _MEDIA_SUFFIXES]
     if not files:
         raise ValueError(f"Inbox 中没有可处理的音频或视频：{inbox}")
-    return max(files, key=lambda path: path.stat().st_mtime_ns)
+    return sorted(files, key=lambda path: path.stat().st_mtime_ns, reverse=True)[:limit]
+
+
+def _select_inbox_media(inbox: Path) -> Path | None:
+    files = _inbox_media(inbox)
+    selected = 0
+    print("\n请选择 Inbox 文件（↑/↓ 移动，Enter 确认，0 返回）：")
+    _draw_media_choices(files, selected)
+    while True:
+        key = _read_key()
+        if key in {"\x00", "\xe0"}:
+            arrow = _read_key()
+            if arrow == "H":
+                selected = (selected - 1) % len(files)
+            elif arrow == "P":
+                selected = (selected + 1) % len(files)
+            else:
+                continue
+            print(f"\x1b[{len(files)}F", end="")
+            _draw_media_choices(files, selected)
+        elif key == "\r":
+            return files[selected]
+        elif key == "0":
+            return None
+        elif key.isdigit() and 1 <= int(key) <= len(files):
+            selected = int(key) - 1
+            print(f"\x1b[{len(files)}F", end="")
+            _draw_media_choices(files, selected)
+            return files[selected]
+
+
+def _draw_media_choices(files: list[Path], selected: int) -> None:
+    for index, path in enumerate(files, 1):
+        marker = ">" if index - 1 == selected else " "
+        date = datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+        print(f"\x1b[2K{marker} {index}. [{date}] {path.name}")
+
+
+def _read_key() -> str:
+    import msvcrt
+
+    return msvcrt.getwch()
 
 
 def _input_path(value: str) -> Path:
