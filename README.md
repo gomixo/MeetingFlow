@@ -92,10 +92,28 @@ uv run meetingflow --config config/meetingflow.toml render <job-id>
 
 相同 SHA-256 的成功任务会复用已有模型结果；`process --force` 才会重新执行。
 
+## Agent JSON 接口
+
+本机 Agent 通过 stdin 提交单个 JSON 请求。stdout 只返回一个 JSON，不混入处理进度：
+
+```powershell
+'{"schema_version":1,"operation":"submit","source":"D:\\Meetings\\Inbox\\meeting.mp4"}' |
+  uv run meetingflow --config config/meetingflow.toml agent
+```
+
+`submit` 返回完整 SHA-256 `job_id`。Agent 使用同一入口轮询：
+
+```json
+{"schema_version":1,"operation":"status","job_id":"<64位SHA-256>"}
+```
+
+任务失败后可发送 `retry`，不接受内部阶段参数。查询成功即返回退出码 0，包括任务状态为 `failed`；非法请求或配置错误返回 2。成功状态的 `result_path` 指向公开的 `result.json`。请求、响应和结果 Schema 位于 `schemas/`。
+
 ## 输出文件
 
 `Output/<任务>/` 只放最终成品：
 
+- `result.json`：供 Agent 使用的版本化结构化转录结果；
 - `speakers.md`：带时间戳和发言人姓名的对话稿，适合交给 ChatGPT 总结；
 - `speakers.srt`：可选的带发言人字幕。
 

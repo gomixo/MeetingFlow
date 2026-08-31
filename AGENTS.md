@@ -56,3 +56,21 @@
 - 完成变更后运行相关检查，并同步 README/开发方案中已经失效的说明。
 - 执行 `uv add`、更换核心模型、修改任务数据库结构、破坏 CLI 兼容性或进行跨模块重大重构前，必须先说明原因、影响和最小方案，等待用户确认。
 - 用户在当前请求中已经明确授权的依赖或重构，无需重复确认。
+
+## Agent skills
+
+### Issue tracker
+
+项目工作项使用 GitHub Issues，通过 `gh` CLI 管理。详见 `docs/agents/issue-tracker.md`。
+
+### Triage labels
+
+使用默认的五类 triage 标签。详见 `docs/agents/triage-labels.md`。
+
+### Domain docs
+
+项目采用 single-context 布局，领域词汇表位于根目录 `CONTEXT.md`。详见 `docs/agents/domain.md`。
+
+### MeetingFlow Agent 调用
+
+当任务需要在 Windows 本机转写已完成写入的会议音视频、轮询转写任务或读取结构化转录结果时，使用 `.agents/skills/meetingflow-agent/SKILL.md`。会议总结、实时字幕、录音控制和内部产物排错不使用该 Skill。

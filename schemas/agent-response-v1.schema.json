@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meetingflow.local/schemas/agent-response-v1.schema.json",
+  "title": "MeetingFlow Agent response v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "ok", "operation"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "ok": {"type": "boolean"},
+    "operation": {"enum": ["submit", "status", "retry", "unknown"]},
+    "job": {"$ref": "#/$defs/job"},
+    "error": {"$ref": "#/$defs/error"}
+  },
+  "oneOf": [
+    {"properties": {"ok": {"const": true}}, "required": ["job"], "not": {"required": ["error"]}},
+    {"properties": {"ok": {"const": false}}, "required": ["error"], "not": {"required": ["job"]}}
+  ],
+  "$defs": {
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message", "retryable"],
+      "properties": {
+        "code": {
+          "enum": [
+            "INVALID_JSON",
+            "UNSUPPORTED_SCHEMA_VERSION",
+            "INVALID_REQUEST",
+            "SOURCE_NOT_FOUND",
+            "SOURCE_NOT_READY",
+            "JOB_NOT_FOUND",
+            "JOB_NOT_FAILED",
+            "CONFIG_INVALID",
+            "INTERNAL_ERROR",
+            "PROCESSING_FAILED",
+            "SOURCE_CHANGED"
+          ]
+        },
+        "message": {"type": "string"},
+        "retryable": {"type": "boolean"}
+      }
+    },
+    "warning": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message"],
+      "properties": {
+        "code": {"const": "WORKER_START_FAILED"},
+        "message": {"type": "string"}
+      }
+    },
+    "job": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["job_id", "status", "submitted_at", "updated_at", "result_path"],
+      "properties": {
+        "job_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "status": {"enum": ["queued", "running", "succeeded", "failed"]},
+        "submitted_at": {"type": "string", "format": "date-time"},
+        "updated_at": {"type": "string", "format": "date-time"},
+        "result_path": {"type": ["string", "null"]},
+        "error": {"$ref": "#/$defs/error"},
+        "warning": {"$ref": "#/$defs/warning"}
+      }
+    }
+  }
+}

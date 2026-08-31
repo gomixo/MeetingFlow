@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://meetingflow.local/schemas/agent-result-v1.schema.json",
+  "title": "MeetingFlow public transcription result v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "job_id", "source", "media", "language", "review_flags", "turns", "artifacts"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "job_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "name", "sha256", "size_bytes"],
+      "properties": {
+        "path": {"type": "string"},
+        "name": {"type": "string"},
+        "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "size_bytes": {"type": "integer", "minimum": 0}
+      }
+    },
+    "media": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["format_name", "duration_seconds", "sample_rate", "channels", "bit_rate", "warnings"],
+      "properties": {
+        "format_name": {"type": "string"},
+        "duration_seconds": {"type": "number", "exclusiveMinimum": 0},
+        "sample_rate": {"type": "integer", "minimum": 1},
+        "channels": {"type": "integer", "minimum": 1},
+        "bit_rate": {"type": ["integer", "null"]},
+        "warnings": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "language": {"type": "string"},
+    "review_flags": {"type": "array", "items": {"type": "string"}},
+    "turns": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["start_seconds", "end_seconds", "speaker_id", "speaker_name", "text"],
+        "properties": {
+          "start_seconds": {"type": "number", "minimum": 0},
+          "end_seconds": {"type": "number", "minimum": 0},
+          "speaker_id": {"type": "string"},
+          "speaker_name": {"type": "string"},
+          "text": {"type": "string"}
+        }
+      }
+    },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "markdown": {"type": "string"},
+        "srt": {"type": "string"}
+      }
+    }
+  }
+}
