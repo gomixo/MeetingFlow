@@ -72,7 +72,7 @@ def test_process_keeps_only_selected_outputs_and_internal_artifacts(tmp_path: Pa
     artifact_dir = settings["work"] / "jobs" / result.job_id
 
     assert not result.skipped
-    assert {path.name for path in result.output_dir.iterdir()} == {"speakers.md"}
+    assert {path.name for path in result.output_dir.iterdir()} == {"result.json", "speakers.md"}
     # 新链路：无 audio-16k-mono.wav（成功后删除）、无 transcript.aligned.json；新增 analysis.sensevoice.json
     assert {path.name for path in artifact_dir.iterdir()} == {
         "run.jsonl",

@@ -7,6 +7,7 @@ import warnings
 from datetime import datetime
 from pathlib import Path
 
+from .agent import run_agent, run_worker
 from .pipeline import (
     ProcessResult,
     Settings,
@@ -36,6 +37,7 @@ def main() -> int:
     )
     parser = argparse.ArgumentParser(prog="meetingflow", description="本地会议音频转写")
     parser.add_argument("--config", type=Path, help="TOML 配置文件路径")
+    parser.add_argument("--agent-worker", action="store_true", help=argparse.SUPPRESS)
     commands = parser.add_subparsers(dest="command")
     command = commands.add_parser("process", help="处理一个已完成写入的音频或视频文件")
     command.add_argument("source", type=Path)
@@ -45,7 +47,12 @@ def main() -> int:
     retry_command = commands.add_parser("retry", help="从指定阶段重新处理失败任务")
     retry_command.add_argument("job_id", help="任务 ID 或其不含歧义的前缀")
     retry_command.add_argument("--from", dest="from_stage", choices=("probe", "normalize", "transcribe", "diarize"), required=True)
+    commands.add_parser("agent", help="通过 stdin/stdout JSON 协议供 Agent 调用")
     arguments = parser.parse_args()
+    if arguments.command == "agent":
+        return run_agent(arguments.config)
+    if arguments.agent_worker:
+        return run_worker(arguments.config)
     try:
         settings = load_settings(arguments.config)
         if arguments.command is None:

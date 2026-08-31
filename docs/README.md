@@ -9,10 +9,10 @@ audited_commit: null
 branch: null
 source: codex
 created: 2026-07-22
-last_reviewed: 2026-08-05
+last_reviewed: 2026-08-31
 supersedes: null
 superseded_by: null
-related: [V2-tech-design-wayfinder-pipeline, V2-project-review-wayfinder-acceptance]
+related: [V2-tech-design-wayfinder-pipeline, V2-project-review-wayfinder-acceptance, V3-tech-design-agent-interface]
 ---
 
 # MeetingFlow 文档索引
@@ -28,6 +28,8 @@ related: [V2-tech-design-wayfinder-pipeline, V2-project-review-wayfinder-accepta
 
 当前架构为 [V2-tech-design-wayfinder-pipeline.md](V2-tech-design-wayfinder-pipeline.md)，验收结论见 [V2-project-review-wayfinder-acceptance.md](V2-project-review-wayfinder-acceptance.md)。V1 及其相关审查、诊断资料均为历史记录。
 
+`feature/agent-interface` 分支的开发方案为 [V3-tech-design-agent-interface.md](V3-tech-design-agent-interface.md)，状态为 draft。
+
 ## 文档清单
 
 | 版次 | doc_type | 状态 | 文件 | 标题 |
@@ -36,6 +38,9 @@ related: [V2-tech-design-wayfinder-pipeline, V2-project-review-wayfinder-accepta
 | V1 | tech-design | superseded | [V1-tech-design-meetingflow.md](V1-tech-design-meetingflow.md) | V1 详细开发方案（历史） |
 | V2 | tech-design | final | [V2-tech-design-wayfinder-pipeline.md](V2-tech-design-wayfinder-pipeline.md) | V2 Wayfinder 会议纪要模式流水线 |
 | V2 | project-review | final | [V2-project-review-wayfinder-acceptance.md](V2-project-review-wayfinder-acceptance.md) | V2 Wayfinder 验收证据与人工核听结论 |
+| V3 | tech-design | draft | [V3-tech-design-agent-interface.md](V3-tech-design-agent-interface.md) | V3 Agent 接口开发方案 |
+| V3 | adr | draft | [V3-adr-versioned-agent-json.md](V3-adr-versioned-agent-json.md) | Agent 接口采用版本化 JSON 契约 |
+| V3 | adr | draft | [V3-adr-on-demand-local-worker.md](V3-adr-on-demand-local-worker.md) | Agent 任务采用按需本机 worker |
 | V1 | code-audit | final | [`V1-audit-chatgpt-static.md`](V1-audit-chatgpt-static.md) | ChatGPT 对 V1 的代码审计结果 |
 | V1 | diagnostic | final | [`V1-diagnostic-transcription-quality.md`](V1-diagnostic-transcription-quality.md) | 转录质量问题诊断与改进建议 |
 | V1 | diagnostic | final | [`V1-diagnostic-real-meeting-benchmark.md`](V1-diagnostic-real-meeting-benchmark.md) | 真实会议转写质量评测与优化建议 |
@@ -78,7 +83,7 @@ R1-review-branch    V1-review-project            V1-visualization-4-stage
 | `title` | string | 与正文一级标题一致的中文标题 |
 | `slug` | string | 与文件名（不含扩展名）一致，纯 ASCII + 连字符 |
 | `version` | string | 版次代号（`V0`/`V1`/`V2`... 或 `R1`/`R2`...） |
-| `doc_type` | enum | `project-plan` / `tech-design` / `code-audit` / `diagnostic` / `changelog` / `branch-review` / `project-review` / `visualization` / `index` |
+| `doc_type` | enum | `project-plan` / `tech-design` / `adr` / `agent-config` / `code-audit` / `diagnostic` / `changelog` / `branch-review` / `project-review` / `visualization` / `index` |
 | `status` | enum | `draft` / `final` / `archived` / `superseded` |
 | `scope` | enum | `project` / `branch` / `module` |
 | `audited_commit` | string \| null | 审计/复审对象的 git 提交哈希，可空 |
@@ -95,4 +100,5 @@ R1-review-branch    V1-review-project            V1-visualization-4-stage
 - 文件名格式：`<Vn\|Rn>-<doc_type>-<描述英文>.<ext>`
 - 全部使用 ASCII 字符 + 连字符（`-`），避免空格与中文，方便跨平台与 Git 处理
 - 新建文档前必须先确定 `version` 与 `status`，并在 front matter 中标注
+- `docs/agents/*.md` 是工程 Skill 的固定路径配置文件，允许不使用版次化文件名
 - `.html` 文档不使用 YAML，而是在 `<head>` 内使用 `<meta name="doc:*">` 与 `application/ld+json` 等价表达

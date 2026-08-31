@@ -282,6 +282,7 @@ def process(source: Path, settings: Settings, start_stage: str | None = None) ->
                 and _all_fingerprints_match(database, job_id, settings)
             ):
                 _render_outputs(artifact_dir, output_dir, output_formats(settings), include_existing=True)
+                _write_public_result(job_id, source, artifact_dir, output_dir)
                 _job(database, job_id, source, output_dir, "succeeded")
                 _log(artifact_dir, "job_skipped", job_id=job_id)
                 return ProcessResult(job_id, output_dir, True)
@@ -307,13 +308,14 @@ def process(source: Path, settings: Settings, start_stage: str | None = None) ->
                     # 完整流水线：需要 FFmpeg（媒体探测 + 标准化）。
                     ensure_ffmpeg_available()
                     _run_full_pipeline(database, job_id, source, output_dir, artifact_dir, settings, start_stage, stage_holder)
+                _cleanup_wav(artifact_dir)
+                _write_public_result(job_id, source, artifact_dir, output_dir)
             except Exception:
                 _stage(database, job_id, stage_holder[0], "failed")
                 _job(database, job_id, source, output_dir, "failed")
                 _log(artifact_dir, "job_failed", job_id=job_id, stage=stage_holder[0], traceback=traceback.format_exc())
                 raise
             _job(database, job_id, source, output_dir, "succeeded")
-            _cleanup_wav(artifact_dir)
             _log(artifact_dir, "job_succeeded", job_id=job_id)
             return ProcessResult(job_id, output_dir, False)
         finally:
@@ -511,6 +513,10 @@ def render(job_id: str, settings: Settings) -> Path:
     full_job_id, output_dir = _find_job(job_id, settings)
     artifact_dir = _artifact_dir(full_job_id, output_dir, settings)
     _render_outputs(artifact_dir, output_dir, output_formats(settings), include_existing=True)
+    if (artifact_dir / "source.json").is_file():
+        _write_public_result(full_job_id, _job_source(full_job_id, settings), artifact_dir, output_dir)
+    elif (output_dir / "result.json").is_file():
+        raise ValueError("任务缺少 source.json，无法刷新 result.json")
     _log(artifact_dir, "render_succeeded")
     return output_dir
 
@@ -545,6 +551,10 @@ def rename_speaker(job_id: str, label: str, name: str, settings: Settings) -> Pa
     names[label] = name
     _write_speaker_names(artifact_dir / "speaker-map.toml", names)
     _render_outputs(artifact_dir, output_dir, output_formats(settings), include_existing=True)
+    if (artifact_dir / "source.json").is_file():
+        _write_public_result(full_job_id, _job_source(full_job_id, settings), artifact_dir, output_dir)
+    elif (output_dir / "result.json").is_file():
+        raise ValueError("任务缺少 source.json，无法刷新 result.json")
     _log(artifact_dir, "speaker_renamed", speaker=label)
     return output_dir
 
@@ -593,6 +603,17 @@ def _find_job(job_id: str, settings: Settings) -> tuple[str, Path]:
     if len(rows) != 1:
         raise ValueError("未找到唯一的成功任务")
     return str(rows[0][0]), Path(rows[0][1])
+
+
+def _job_source(job_id: str, settings: Settings) -> Path:
+    database = _open_database(settings["work"] / "meetingflow.db")
+    try:
+        row = database.execute("SELECT source_path FROM jobs WHERE id = ?", (job_id,)).fetchone()
+    finally:
+        database.close()
+    if row is None:
+        raise ValueError("未找到任务")
+    return Path(row[0])
 
 
 def _artifact_dir(job_id: str, output_dir: Path, settings: Settings) -> Path:
@@ -708,6 +729,10 @@ def _open_database(path: Path) -> sqlite3.Connection:
     database.execute(
         "CREATE TABLE IF NOT EXISTS jobs (id TEXT PRIMARY KEY, source_path TEXT NOT NULL, output_dir TEXT NOT NULL, status TEXT NOT NULL)"
     )
+    columns = {str(row[1]) for row in database.execute("PRAGMA table_info(jobs)")}
+    for name in ("submitted_at", "updated_at", "error_code", "error_message"):
+        if name not in columns:
+            database.execute(f"ALTER TABLE jobs ADD COLUMN {name} TEXT")
     database.execute(
         "CREATE TABLE IF NOT EXISTS stages (job_id TEXT NOT NULL, name TEXT NOT NULL, status TEXT NOT NULL, parameters TEXT, updated_at TEXT NOT NULL, PRIMARY KEY (job_id, name))"
     )
@@ -719,9 +744,12 @@ def _open_database(path: Path) -> sqlite3.Connection:
 
 
 def _job(database: sqlite3.Connection, job_id: str, source: Path, output_dir: Path, status: str) -> None:
+    updated_at = datetime.now(UTC).isoformat()
     database.execute(
-        "INSERT INTO jobs VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET source_path=excluded.source_path, output_dir=excluded.output_dir, status=excluded.status",
-        (job_id, str(source), str(output_dir), status),
+        "INSERT INTO jobs (id, source_path, output_dir, status, updated_at) VALUES (?, ?, ?, ?, ?) "
+        "ON CONFLICT(id) DO UPDATE SET source_path=excluded.source_path, output_dir=excluded.output_dir, "
+        "status=excluded.status, updated_at=excluded.updated_at, error_code=NULL, error_message=NULL",
+        (job_id, str(source), str(output_dir), status, updated_at),
     )
     database.commit()
 
@@ -793,6 +821,70 @@ def _atomic_text(path: Path, content: str) -> None:
     except Exception:
         Path(temporary).unlink(missing_ok=True)
         raise
+
+
+def _write_public_result(job_id: str, source: Path, artifact_dir: Path, output_dir: Path) -> Path:
+    source_payload = json.loads((artifact_dir / "source.json").read_text(encoding="utf-8"))
+    transcript = json.loads((artifact_dir / "transcript.raw.json").read_text(encoding="utf-8"))
+    speakers = _read_speakers(artifact_dir)
+    names = _speaker_names(speakers, artifact_dir / "speaker-map.toml")
+    segments = transcript.get("segments")
+    if (
+        not isinstance(source_payload, dict)
+        or not isinstance(source_payload.get("size"), int)
+        or not isinstance(source_payload.get("media"), dict)
+        or not isinstance(transcript.get("language"), str)
+        or not isinstance(transcript.get("review_flags", []), list)
+        or not isinstance(segments, list)
+        or len(segments) != len(speakers)
+    ):
+        raise ValueError("任务产物格式异常，无法生成 result.json")
+    turns: list[dict[str, object]] = []
+    for index, segment in enumerate(segments):
+        speaker = speakers[index]
+        if (
+            not isinstance(segment, dict)
+            or not isinstance(segment.get("start"), (int, float))
+            or not isinstance(segment.get("end"), (int, float))
+            or not isinstance(segment.get("text"), str)
+            or segment["start"] != speaker["start"]
+            or segment["end"] != speaker["end"]
+        ):
+            raise ValueError("任务产物格式异常，无法生成 result.json")
+        turns.append(
+            {
+                "start_seconds": segment.get("start"),
+                "end_seconds": segment.get("end"),
+                "speaker_id": speaker["speaker"],
+                "speaker_name": names[speaker["speaker"]],
+                "text": segment.get("text"),
+            }
+        )
+    artifacts = {
+        suffix: str(path.resolve())
+        for suffix, path in (("markdown", output_dir / "speakers.md"), ("srt", output_dir / "speakers.srt"))
+        if path.is_file()
+    }
+    path = output_dir / "result.json"
+    _atomic_json(
+        path,
+        {
+            "schema_version": 1,
+            "job_id": job_id,
+            "source": {
+                "path": str(source.resolve()),
+                "name": source.name,
+                "sha256": job_id,
+                "size_bytes": source_payload.get("size"),
+            },
+            "media": source_payload["media"],
+            "language": transcript.get("language"),
+            "review_flags": transcript.get("review_flags", []),
+            "turns": turns,
+            "artifacts": artifacts,
+        },
+    )
+    return path
 
 
 def _log(output_dir: Path, event: str, **fields: object) -> None:
