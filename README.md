@@ -138,6 +138,17 @@ uv run meetingflow --config config/meetingflow.toml render <job-id>
 - 不提交真实会议录音、访问令牌、模型缓存、本机配置或运行数据。
 - Agent 开发约束见 [AGENTS.md](AGENTS.md)，当前设计见 [docs/V2-tech-design-wayfinder-pipeline.md](docs/V2-tech-design-wayfinder-pipeline.md)，验收见 [docs/V2-project-review-wayfinder-acceptance.md](docs/V2-project-review-wayfinder-acceptance.md)，全部文档见 [docs/README.md](docs/README.md)。
 
+## macOS 支持
+
+项目可在 Apple Silicon Mac 上本机运行（实测 M5 / 16 GB）：
+
+- torch/torchaudio 仅在 Windows 上使用 cu128 索引（`pyproject.toml` 按 `platform_system` 标记门控），macOS 使用 PyPI 默认源；
+- 无 CUDA 时 `analyze()` 自动回退 CPU 推理；冻结参数与转写指纹保持不变，Windows 目标环境行为不受影响；
+- 终端菜单方向键兼容 macOS 终端（`_read_key` 使用 termios 原始模式）；
+- FFmpeg 通过 Homebrew 安装（`brew install ffmpeg`），`config/meetingflow.toml` 中配置本机路径即可。
+
+实测：80 秒双发言人音频全流程约 15 秒（含模型加载）；`uv run pytest` 全部通过。注意：CPU 推理尚未通过发布门的固定三场景盲评与人工核听，转写质量结论仍以 Windows + CUDA 验收为准。
+
 ## 反馈问题
 
 如果发现缺陷或安装问题，请在 [GitHub Issues](https://github.com/gomixo/MeetingFlow/issues) 中提交。请勿附加真实会议音频、完整转写内容、访问令牌或本机配置。

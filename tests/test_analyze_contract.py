@@ -14,6 +14,13 @@ from meetingflow import analyze as analyze_module
 from meetingflow.analyze import manifest_hashes, verify_models
 
 
+def _expected_device() -> str:
+    """analyze() 的设备回退契约：有 CUDA 用冻结值 cuda:0，否则回退 cpu。"""
+    import torch
+
+    return "cuda:0" if torch.cuda.is_available() else "cpu"
+
+
 def _install_fake_funasr(
     monkeypatch: pytest.MonkeyPatch,
     calls: dict[str, dict[str, object]],
@@ -135,7 +142,7 @@ def test_analyze_passes_local_dirs_and_frozen_automodel_options(monkeypatch: pyt
     assert calls["automodel"]["vad_model"] == str(settings["vad_dir"])
     assert calls["automodel"]["spk_model"] == str(settings["spk_dir"])
     assert calls["automodel"]["spk_mode"] == "vad_segment"
-    assert calls["automodel"]["device"] == "cuda:0"
+    assert calls["automodel"]["device"] == _expected_device()
     assert calls["automodel"]["disable_update"] is True
     assert calls["automodel"]["trust_remote_code"] is False
     assert calls["automodel"]["vad_kwargs"] == {"max_single_segment_time": 15000}

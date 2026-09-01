@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 import warnings
 from datetime import datetime
@@ -132,14 +133,8 @@ def _select_inbox_media(inbox: Path) -> Path | None:
     _draw_media_choices(files, selected)
     while True:
         key = _read_key()
-        if key in {"\x00", "\xe0"}:
-            arrow = _read_key()
-            if arrow == "H":
-                selected = (selected - 1) % len(files)
-            elif arrow == "P":
-                selected = (selected + 1) % len(files)
-            else:
-                continue
+        if key in {"up", "down"}:
+            selected = (selected - 1) % len(files) if key == "up" else (selected + 1) % len(files)
             print(f"\x1b[{len(files)}F", end="")
             _draw_media_choices(files, selected)
         elif key == "\r":
@@ -161,9 +156,27 @@ def _draw_media_choices(files: list[Path], selected: int) -> None:
 
 
 def _read_key() -> str:
-    import msvcrt
+    """读一个按键：方向键统一返回 "up"/"down"，其余返回字符本身。Windows 用 msvcrt，其余用 termios 原始模式。"""
+    if os.name == "nt":
+        import msvcrt
 
-    return msvcrt.getwch()
+        key = msvcrt.getwch()
+        if key in {"\x00", "\xe0"}:
+            return {"H": "up", "P": "down"}.get(msvcrt.getwch(), "")
+        return key
+    import termios
+    import tty
+
+    descriptor = sys.stdin.fileno()
+    previous = termios.tcgetattr(descriptor)
+    try:
+        tty.setraw(descriptor)
+        key = sys.stdin.read(1)
+        if key == "\x1b":
+            return {"[A": "up", "[B": "down"}.get(sys.stdin.read(2), "")
+        return key
+    finally:
+        termios.tcsetattr(descriptor, termios.TCSADRAIN, previous)
 
 
 def _input_path(value: str) -> Path:

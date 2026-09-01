@@ -184,7 +184,7 @@ def test_inbox_picker_lists_latest_six_and_supports_wrapped_arrow_selection(
     (inbox / "说明.txt").write_text("ignore", encoding="utf-8")
 
     assert _inbox_media(inbox) == list(reversed(files[1:]))
-    keys = iter(["\xe0", "H", "\r"])
+    keys = iter(["up", "\r"])
     monkeypatch.setattr("meetingflow.__main__._read_key", lambda: next(keys))
     assert _select_inbox_media(inbox) == files[1]
     monkeypatch.setattr("meetingflow.__main__._read_key", lambda: "3")

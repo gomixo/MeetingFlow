@@ -24,6 +24,7 @@ ANALYSIS_FORMAT = "sensevoice-analysis-v1"
 DERIVE_FORMAT = "sensevoice-derive-v1"
 
 # 冻结参数（见目标架构交接文档）：任何改动都必须重新通过固定三场景回归与零网络探针。
+# device 保持 cuda:0 冻结值；无 CUDA 的平台（如 macOS）在 analyze() 内运行时回退 cpu，不改变 Windows 行为与转写指纹。
 AUTOMODEL_OPTIONS: dict[str, object] = {
     "vad_kwargs": {"max_single_segment_time": 15000},
     "spk_mode": "vad_segment",
@@ -146,9 +147,10 @@ def analyze(audio_path: Path, settings: AnalysisSettings) -> dict[str, object]:
     _register_dll_directories()
     import torch
 
-    if not torch.cuda.is_available():
-        raise ValueError("未检测到 CUDA GPU。当前方案按 RTX 4060 冻结，不支持 CPU 回退。")
     options = {**AUTOMODEL_OPTIONS, "vad_kwargs": dict(AUTOMODEL_OPTIONS["vad_kwargs"])}  # type: ignore[dict-item]
+    if not torch.cuda.is_available():
+        # 无 CUDA 平台（如 macOS）回退 CPU 推理；Windows + RTX 4060 目标环境行为不变。
+        options["device"] = "cpu"
     with _quiet_funasr_output():
         from funasr import AutoModel
         from funasr.auto import auto_model as funasr_auto_model
@@ -171,7 +173,9 @@ def analyze(audio_path: Path, settings: AnalysisSettings) -> dict[str, object]:
             finally:
                 del model
                 gc.collect()
-                torch.cuda.empty_cache()
+                # macOS CPU 推理无 CUDA 上下文；仅在有 CUDA 时清理显存。
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
         finally:
             funasr_auto_model.tqdm = original_tqdm
             if succeeded:
