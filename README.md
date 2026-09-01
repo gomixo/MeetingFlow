@@ -137,3 +137,11 @@ uv run meetingflow --config config/meetingflow.toml render <job-id>
 - 阶段产物按参数指纹复用：模型清单哈希与冻结参数变化时只重跑受影响阶段及下游。
 - 不提交真实会议录音、访问令牌、模型缓存、本机配置或运行数据。
 - Agent 开发约束见 [AGENTS.md](AGENTS.md)，当前设计见 [docs/V2-tech-design-wayfinder-pipeline.md](docs/V2-tech-design-wayfinder-pipeline.md)，验收见 [docs/V2-project-review-wayfinder-acceptance.md](docs/V2-project-review-wayfinder-acceptance.md)，全部文档见 [docs/README.md](docs/README.md)。
+
+## 反馈问题
+
+如果发现缺陷或安装问题，请在 [GitHub Issues](https://github.com/gomixo/MeetingFlow/issues) 中提交。请勿附加真实会议音频、完整转写内容、访问令牌或本机配置。
+
+## 许可证
+
+本项目采用 [MIT License](LICENSE)。

@@ -83,7 +83,7 @@ Windows 的 Python DLL 搜索规则还要求程序在导入 TorchCodec/CTranslat
 |---|---|---|
 | OBS | 32.1.1，64 位 | 可用 |
 | OBS 采样率 | 48 kHz，Stereo | 正确 |
-| 录制目录 | `C:\Users\xiaob\Videos` | C 盘空间偏紧，建议迁到 D 盘 |
+| 录制目录 | `%USERPROFILE%\Videos` | C 盘空间偏紧，建议迁到 D 盘 |
 | 录制格式 | Hybrid MP4，AAC 160 kbps | 可处理，但音频项目无需 1080p60 视频负担 |
 | 视频 | 1920×1080，60 FPS，x264 | 纯会议录音不必要，占 CPU 和磁盘 |
 | 桌面音频 | `default` | 会随系统默认设备改变，不稳定 |

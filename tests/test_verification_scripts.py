@@ -48,6 +48,15 @@ def test_three_scenario_command_forces_current_worktree(tmp_path: Path) -> None:
     assert command[:3] == ["uv", "run", "meetingflow"]
 
 
+def test_three_scenario_default_paths_follow_repository_root() -> None:
+    script = _load_script("verify-three-scenario.py")
+    prototype_root = ROOT / ".scratch" / "meeting-transcription-selection" / "prototype"
+
+    assert ROOT == script.REPOSITORY_ROOT
+    assert prototype_root / "benchmark-outputs" == script.PROTO_DIR
+    assert prototype_root / "benchmark-audio" == script.BENCHMARK_DIR
+
+
 def test_three_scenario_gate_rejects_drift_and_review_flags() -> None:
     script = _load_script("verify-three-scenario.py")
     accepted = {"new_chars": 100, "new_paragraphs": 10, "review_flags": [], "diff_vs_proto": {"similarity": 0.98}}

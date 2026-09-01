@@ -20,8 +20,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-PROTO_DIR = Path(r"D:\Workspace\meeting-flow\.scratch\meeting-transcription-selection\prototype\benchmark-outputs")
-BENCHMARK_DIR = Path(r"D:\Workspace\meeting-flow\.scratch\meeting-transcription-selection\prototype\benchmark-audio")
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
+PROTOTYPE_ROOT = REPOSITORY_ROOT / ".scratch" / "meeting-transcription-selection" / "prototype"
+PROTO_DIR = PROTOTYPE_ROOT / "benchmark-outputs"
+BENCHMARK_DIR = PROTOTYPE_ROOT / "benchmark-audio"
 
 SCENES = {
     "normal": {"title": "日常场景（完整会议）", "wav": BENCHMARK_DIR / "normal.wav"},
