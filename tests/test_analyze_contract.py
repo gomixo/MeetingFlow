@@ -11,14 +11,7 @@ from pathlib import Path
 import pytest
 
 from meetingflow import analyze as analyze_module
-from meetingflow.analyze import manifest_hashes, verify_models
-
-
-def _expected_device() -> str:
-    """analyze() 的设备回退契约：有 CUDA 用冻结值 cuda:0，否则回退 cpu。"""
-    import torch
-
-    return "cuda:0" if torch.cuda.is_available() else "cpu"
+from meetingflow.analyze import automodel_options, manifest_hashes, verify_models
 
 
 def _install_fake_funasr(
@@ -27,6 +20,8 @@ def _install_fake_funasr(
     sentence_info: list | None = None,
     full_text: str = "raw-text",
     *,
+    cuda_available: bool = True,
+    empty_cache_calls: list[None] | None = None,
     emit_terminal_noise: bool = False,
     emit_progress: bool = False,
 ) -> None:
@@ -87,8 +82,13 @@ def _install_fake_funasr(
 
     fake_torch = types.ModuleType("torch")
     fake_cuda = types.ModuleType("torch.cuda")
-    fake_cuda.is_available = lambda: True  # type: ignore[attr-defined]
-    fake_cuda.empty_cache = lambda: None  # type: ignore[attr-defined]
+    fake_cuda.is_available = lambda: cuda_available  # type: ignore[attr-defined]
+
+    def empty_cache() -> None:
+        if empty_cache_calls is not None:
+            empty_cache_calls.append(None)
+
+    fake_cuda.empty_cache = empty_cache  # type: ignore[attr-defined]
     fake_torch.cuda = fake_cuda  # type: ignore[attr-defined]
     monkeypatch.setitem(sys.modules, "torch", fake_torch)
     monkeypatch.setattr(analyze_module, "_register_dll_directories", lambda: None)
@@ -128,9 +128,20 @@ def _analysis_settings(tmp_path: Path) -> dict[str, Path]:
     return dirs
 
 
-def test_analyze_passes_local_dirs_and_frozen_automodel_options(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+@pytest.mark.parametrize(("cuda_available", "expected_device"), [(True, "cuda:0"), (False, "cpu")])
+def test_analyze_passes_local_dirs_and_effective_automodel_options(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, cuda_available: bool, expected_device: str
+) -> None:
     calls: dict[str, dict[str, object]] = {}
-    _install_fake_funasr(monkeypatch, calls)
+    empty_cache_calls: list[None] = []
+    _install_fake_funasr(
+        monkeypatch,
+        calls,
+        cuda_available=cuda_available,
+        empty_cache_calls=empty_cache_calls,
+    )
+    monkeypatch.setattr(analyze_module.sys, "platform", "win32" if cuda_available else "darwin")
+    monkeypatch.setattr(analyze_module.platform, "machine", lambda: "AMD64" if cuda_available else "arm64")
     settings = _analysis_settings(tmp_path)
     _install_fake_anchors(monkeypatch, settings)  # type: ignore[arg-type]
     wav = tmp_path / "a.wav"
@@ -142,10 +153,40 @@ def test_analyze_passes_local_dirs_and_frozen_automodel_options(monkeypatch: pyt
     assert calls["automodel"]["vad_model"] == str(settings["vad_dir"])
     assert calls["automodel"]["spk_model"] == str(settings["spk_dir"])
     assert calls["automodel"]["spk_mode"] == "vad_segment"
-    assert calls["automodel"]["device"] == _expected_device()
+    assert calls["automodel"]["device"] == expected_device
     assert calls["automodel"]["disable_update"] is True
     assert calls["automodel"]["trust_remote_code"] is False
     assert calls["automodel"]["vad_kwargs"] == {"max_single_segment_time": 15000}
+    assert len(empty_cache_calls) == int(cuda_available)
+
+
+@pytest.mark.parametrize(("cuda_available", "expected_device"), [(True, "cuda:0"), (False, "cpu")])
+def test_automodel_options_resolves_device_without_mutating_frozen_options(
+    monkeypatch: pytest.MonkeyPatch, cuda_available: bool, expected_device: str
+) -> None:
+    _install_fake_funasr(monkeypatch, {}, cuda_available=cuda_available)
+    monkeypatch.setattr(analyze_module.sys, "platform", "win32" if cuda_available else "darwin")
+    monkeypatch.setattr(analyze_module.platform, "machine", lambda: "AMD64" if cuda_available else "arm64")
+
+    assert automodel_options()["device"] == expected_device
+    assert analyze_module.AUTOMODEL_OPTIONS["device"] == "cuda:0"
+
+
+def test_analyze_rejects_missing_cuda_on_windows(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    _install_fake_funasr(monkeypatch, {}, cuda_available=False)
+    monkeypatch.setattr(analyze_module.sys, "platform", "win32")
+    settings = _analysis_settings(tmp_path)
+    _install_fake_anchors(monkeypatch, settings)  # type: ignore[arg-type]
+
+    with pytest.raises(ValueError, match="Windows 目标环境需要 NVIDIA CUDA"):
+        analyze_module.analyze(tmp_path / "a.wav", settings)  # type: ignore[arg-type]
+
+
+def test_automodel_options_rejects_unsupported_platform(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(analyze_module.sys, "platform", "linux")
+
+    with pytest.raises(ValueError, match="当前平台不受支持"):
+        automodel_options()
 
 
 def test_analyze_hides_normal_funasr_noise_but_keeps_real_errors(

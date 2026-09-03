@@ -50,7 +50,7 @@ def _install_models(monkeypatch: pytest.MonkeyPatch, calls: dict[str, int]) -> N
         dest.write_bytes(b"fake-wav")
         return dest, -3.0
 
-    def analyze_fn(_source: Path, _settings: object) -> dict[str, object]:
+    def analyze_fn(_source: Path, _settings: object, _options: dict[str, object]) -> dict[str, object]:
         calls["analyze"] += 1
         return _analysis()
 
@@ -93,6 +93,44 @@ def test_normalize_fingerprint_change_reruns_analysis(tmp_path: Path, monkeypatc
     assert calls == {"probe": 1, "normalize": 2, "analyze": 2}
 
 
+def test_transcription_fingerprint_and_logged_parameters_include_effective_device(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = _settings(tmp_path)
+    base_options = {**pipeline.AUTOMODEL_OPTIONS, "vad_kwargs": dict(pipeline.AUTOMODEL_OPTIONS["vad_kwargs"])}  # type: ignore[dict-item]
+    monkeypatch.setattr(pipeline, "automodel_options", lambda: {**base_options, "device": "cpu"})
+
+    cpu_fingerprint = pipeline._transcription_fingerprint(settings["models"])
+    cpu_parameters = pipeline._analysis_parameters(settings["models"])
+    monkeypatch.setattr(pipeline, "automodel_options", lambda: {**base_options, "device": "cuda:0"})
+
+    assert pipeline._transcription_fingerprint(settings["models"]) != cpu_fingerprint
+    assert cpu_parameters["automodel"]["device"] == "cpu"  # type: ignore[index]
+
+
+def test_effective_device_change_reruns_analysis_and_updates_log(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _settings(tmp_path)
+    calls = {"probe": 0, "normalize": 0, "analyze": 0}
+    _install_models(monkeypatch, calls)
+    source = tmp_path / "meeting.mp4"
+    source.write_bytes(b"data")
+    device = {"value": "cpu"}
+    base_options = {**pipeline.AUTOMODEL_OPTIONS, "vad_kwargs": dict(pipeline.AUTOMODEL_OPTIONS["vad_kwargs"])}  # type: ignore[dict-item]
+    monkeypatch.setattr(pipeline, "automodel_options", lambda: {**base_options, "device": device["value"]})
+
+    result = pipeline.process(source, settings)
+    device["value"] = "cuda:0"
+    pipeline.process(source, settings)
+
+    assert calls == {"probe": 1, "normalize": 2, "analyze": 2}
+    events = [
+        json.loads(line)
+        for line in (settings["work"] / "jobs" / result.job_id / "run.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    devices = [event["parameters"]["automodel"]["device"] for event in events if event["event"] == "stage_succeeded" and event["stage"] == "transcribe"]
+    assert devices == ["cpu", "cuda:0"]
+
+
 def test_retry_from_diarize_reruns_only_diarize_without_series_models(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     settings = _settings(tmp_path)
     calls = {"probe": 0, "normalize": 0, "analyze": 0}
@@ -109,6 +147,21 @@ def test_retry_from_diarize_reruns_only_diarize_without_series_models(tmp_path: 
     artifact_dir = settings["work"] / "jobs" / result.job_id
     assert (artifact_dir / "transcript.raw.json").is_file()
     assert (artifact_dir / "speakers.json").is_file()
+
+
+def test_retry_from_diarize_does_not_probe_cuda(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = _settings(tmp_path)
+    calls = {"probe": 0, "normalize": 0, "analyze": 0}
+    _install_models(monkeypatch, calls)
+    source = tmp_path / "meeting.mp4"
+    source.write_bytes(b"data")
+    result = pipeline.process(source, settings)
+
+    monkeypatch.setattr(pipeline, "automodel_options", lambda: {**pipeline.AUTOMODEL_OPTIONS})
+    monkeypatch.setattr(pipeline, "ensure_ffmpeg_available", lambda: pytest.fail("diarize 重试不应检查 FFmpeg"))
+    monkeypatch.setattr(pipeline, "analyze", lambda *_args: pytest.fail("diarize 重试不应运行模型"))
+
+    pipeline.retry(result.job_id[:8], "diarize", settings)
 
 
 def test_retry_from_transcribe_reruns_transcribe_and_downstream(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -238,7 +291,7 @@ def test_repetition_flag_writes_run_jsonl_event(tmp_path: Path, monkeypatch: pyt
     settings = _settings(tmp_path)
     calls = {"probe": 0, "normalize": 0, "analyze": 0}
 
-    def analyze_with_flag(_source: Path, _settings: object) -> dict[str, object]:
+    def analyze_with_flag(_source: Path, _settings: object, _options: dict[str, object]) -> dict[str, object]:
         calls["analyze"] += 1
         return _analysis_with_flag()
 

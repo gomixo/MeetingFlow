@@ -9,7 +9,7 @@ audited_commit: null
 branch: feature/sensevoice-pipeline
 source: codex
 created: 2026-08-05
-last_reviewed: 2026-08-05
+last_reviewed: 2026-09-03
 supersedes: null
 superseded_by: null
 related: [V1-diagnostic-transcription-quality]
@@ -29,6 +29,8 @@ related: [V1-diagnostic-transcription-quality]
   - vad：`945028ecf1f721765b0a5d5cce4f3c4a85ee5a191477dbd88686b4cfd1626674`
   - speaker：`647df6a5368efc281936415f6b08d65e7ac5e97352e80d27d231bffefdc7b63b`
 - 冻结推理参数：`vad_kwargs={max_single_segment_time:15000}`、`spk_mode=vad_segment`、`device=cuda:0`、`disable_update=true`、`trust_remote_code=false`、`language=zh`、`use_itn=true`、`batch_size_s=60`、`merge_vad=true`、`merge_length_s=10`
+
+> 本文的全部质量、离线与体积结论仅适用于 Windows + CUDA。Apple Silicon macOS 的 CPU 推理是新的运行条件，须重新完成本文 A、B、C、D 的相应验收后才能合并。
 
 ## A. 固定三场景回归
 

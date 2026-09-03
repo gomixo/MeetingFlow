@@ -12,6 +12,7 @@ import io
 import json
 import logging
 import os
+import platform
 import re
 import shutil
 import sys
@@ -23,8 +24,7 @@ from typing import TypedDict
 ANALYSIS_FORMAT = "sensevoice-analysis-v1"
 DERIVE_FORMAT = "sensevoice-derive-v1"
 
-# 冻结参数（见目标架构交接文档）：任何改动都必须重新通过固定三场景回归与零网络探针。
-# device 保持 cuda:0 冻结值；无 CUDA 的平台（如 macOS）在 analyze() 内运行时回退 cpu，不改变 Windows 行为与转写指纹。
+# 冻结参数（见目标架构交接文档）：任何改动都必须重新通过对应设备的固定三场景回归与零网络探针。
 AUTOMODEL_OPTIONS: dict[str, object] = {
     "vad_kwargs": {"max_single_segment_time": 15000},
     "spk_mode": "vad_segment",
@@ -59,6 +59,16 @@ class SpeakerSegment(TypedDict):
     start: float
     end: float
     speaker: str
+
+
+def automodel_options() -> dict[str, object]:
+    """返回本次语音分析的有效参数，供执行、指纹和日志共用。"""
+    options = {**AUTOMODEL_OPTIONS, "vad_kwargs": dict(AUTOMODEL_OPTIONS["vad_kwargs"])}  # type: ignore[dict-item]
+    if sys.platform == "darwin" and platform.machine().lower() in {"arm64", "aarch64"}:
+        options["device"] = "cpu"
+    elif sys.platform != "win32":
+        raise ValueError("当前平台不受支持。MeetingFlow 仅支持 Windows + NVIDIA CUDA 和 Apple Silicon macOS CPU。")
+    return options
 
 
 def manifest_hashes(settings: AnalysisSettings) -> dict[str, str]:
@@ -141,16 +151,15 @@ def _manifest_hash(manifest: dict[str, object]) -> str:
     return hashlib.sha256(canon.encode("utf-8")).hexdigest()
 
 
-def analyze(audio_path: Path, settings: AnalysisSettings) -> dict[str, object]:
+def analyze(audio_path: Path, settings: AnalysisSettings, options: dict[str, object] | None = None) -> dict[str, object]:
     """串行加载三个本地模型，一次运行得到文字、VAD 时间与说话人段，返回原生分析产物。"""
     verify_models(settings)
+    options = automodel_options() if options is None else {**options, "vad_kwargs": dict(options["vad_kwargs"])}  # type: ignore[dict-item]
     _register_dll_directories()
     import torch
 
-    options = {**AUTOMODEL_OPTIONS, "vad_kwargs": dict(AUTOMODEL_OPTIONS["vad_kwargs"])}  # type: ignore[dict-item]
-    if not torch.cuda.is_available():
-        # 无 CUDA 平台（如 macOS）回退 CPU 推理；Windows + RTX 4060 目标环境行为不变。
-        options["device"] = "cpu"
+    if options["device"] != "cpu" and not torch.cuda.is_available():
+        raise ValueError("未检测到 CUDA GPU。Windows 目标环境需要 NVIDIA CUDA。")
     with _quiet_funasr_output():
         from funasr import AutoModel
         from funasr.auto import auto_model as funasr_auto_model
@@ -173,8 +182,7 @@ def analyze(audio_path: Path, settings: AnalysisSettings) -> dict[str, object]:
             finally:
                 del model
                 gc.collect()
-                # macOS CPU 推理无 CUDA 上下文；仅在有 CUDA 时清理显存。
-                if torch.cuda.is_available():
+                if options["device"] != "cpu":
                     torch.cuda.empty_cache()
         finally:
             funasr_auto_model.tqdm = original_tqdm

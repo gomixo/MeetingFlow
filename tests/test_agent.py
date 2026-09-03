@@ -293,7 +293,7 @@ def test_result_json_tracks_speaker_rename(tmp_path: Path, monkeypatch: pytest.M
     monkeypatch.setattr(
         pipeline,
         "analyze",
-        lambda _source, _settings: {"sentences": [{"start": 0, "end": 1000, "speaker": "SPEAKER_00", "text": "你好"}]},
+        lambda _source, _settings, _options: {"sentences": [{"start": 0, "end": 1000, "speaker": "SPEAKER_00", "text": "你好"}]},
     )
 
     result = pipeline.process(source, settings)
@@ -320,7 +320,7 @@ def test_result_json_ignores_legacy_aligned_transcript(tmp_path: Path, monkeypat
     monkeypatch.setattr(
         pipeline,
         "analyze",
-        lambda _source, _settings: {"sentences": [{"start": 0, "end": 1000, "speaker": "SPEAKER_00", "text": "主要轮次"}]},
+        lambda _source, _settings, _options: {"sentences": [{"start": 0, "end": 1000, "speaker": "SPEAKER_00", "text": "主要轮次"}]},
     )
     result = pipeline.process(source, settings)
     artifact_dir = settings["work"] / "jobs" / result.job_id

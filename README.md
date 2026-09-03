@@ -1,6 +1,6 @@
 # MeetingFlow
 
-MeetingFlow 是一套面向 Windows 的本地会议音频处理流水线：OBS 负责录音，MeetingFlow 负责音频检查、中文转写、发言人区分和 Markdown/SRT 输出。音频和转写内容始终保留在本机。
+MeetingFlow 是一套面向 Windows 和 Apple Silicon macOS 的本地会议音频处理流水线：OBS 负责录音，MeetingFlow 负责音频检查、中文转写、发言人区分和 Markdown/SRT 输出。音频和转写内容始终保留在本机。
 
 ## 当前状态
 
@@ -12,7 +12,7 @@ MeetingFlow 是一套面向 Windows 的本地会议音频处理流水线：OBS �
 - 终端内选择历史任务和发言人，并输入中文姓名重新渲染；
 - 默认生成带发言人的 Markdown，可切换为 SRT 或两者；
 - SHA-256 任务去重、SQLite 阶段状态、失败重试、原子写入和 JSONL 日志；
-- Windows FFmpeg/PyTorch DLL 路径注册和单 GPU 串行模型执行；
+- Windows FFmpeg/PyTorch DLL 路径注册、CUDA 推理和 macOS CPU 推理；
 - 完全离线运行，不依赖 Hugging Face、ModelScope 或 Token；
 - 旧版平铺任务兼容，原始录音始终只读。
 
@@ -62,7 +62,7 @@ uv run scripts/prepare-models.py
 uv run scripts/prepare-models.py --root D:/MeetingFlow/Models
 ```
 
-该脚本按固定 commit 从 ModelScope 下载 `iic/SenseVoiceSmall`、`iic/speech_fsmn_vad_zh-cn-16k-common-pytorch`、`iic/speech_campplus_sv_zh-cn_16k-common`，生成确定性 manifest（按路径排序、丢弃时间戳、规范序列化），然后调用 `analyze.verify_models` 锚点核对。目录已存在则跳过下载并重新生成 manifest。
+该脚本按固定 commit 从 ModelScope 下载 `iic/SenseVoiceSmall`、`iic/speech_fsmn_vad_zh-cn-16k-common-pytorch`、`iic/speech_campplus_sv_zh-cn_16k-common`。它以远程 commit 的文件清单为范围，逐文件核对字节数和 SHA-256，再按大小写无关的路径顺序生成跨平台一致的 manifest。下载器的本地元数据不会进入模型目录。目录已存在时跳过下载，最后由 `analyze.verify_models` 执行只读校验。
 
 日常运行完全离线：启动前校验目录与哈希，缺失或不匹配直接失败，不会回退在线下载，也无需 `HF_TOKEN`。
 
@@ -133,8 +133,8 @@ uv run meetingflow --config config/meetingflow.toml render <job-id>
 ## 数据原则
 
 - 原始录音只读，不覆盖、不删除。
-- 模型任务串行执行，进程锁落实单 GPU 串行，避免 RTX 4060 8GB 显存被同时占用。
-- 阶段产物按参数指纹复用：模型清单哈希与冻结参数变化时只重跑受影响阶段及下游。
+- 模型任务串行执行；Windows 上的进程锁避免 RTX 4060 8GB 显存被同时占用。
+- 阶段产物按参数指纹复用：模型清单哈希、冻结参数或有效设备变化时重跑受影响阶段及下游。
 - 不提交真实会议录音、访问令牌、模型缓存、本机配置或运行数据。
 - Agent 开发约束见 [AGENTS.md](AGENTS.md)，当前设计见 [docs/V2-tech-design-wayfinder-pipeline.md](docs/V2-tech-design-wayfinder-pipeline.md)，验收见 [docs/V2-project-review-wayfinder-acceptance.md](docs/V2-project-review-wayfinder-acceptance.md)，全部文档见 [docs/README.md](docs/README.md)。
 
@@ -143,11 +143,11 @@ uv run meetingflow --config config/meetingflow.toml render <job-id>
 项目可在 Apple Silicon Mac 上本机运行（实测 M5 / 16 GB）：
 
 - torch/torchaudio 仅在 Windows 上使用 cu128 索引（`pyproject.toml` 按 `platform_system` 标记门控），macOS 使用 PyPI 默认源；
-- 无 CUDA 时 `analyze()` 自动回退 CPU 推理；冻结参数与转写指纹保持不变，Windows 目标环境行为不受影响；
+- Apple Silicon macOS 无 CUDA 时 `analyze()` 使用 CPU 推理；Windows 仍要求 NVIDIA CUDA。有效设备会写入转写指纹和 `run.jsonl`，CPU/CUDA 产物不会互相复用；
 - 终端菜单方向键兼容 macOS 终端（`_read_key` 使用 termios 原始模式）；
 - FFmpeg 通过 Homebrew 安装（`brew install ffmpeg`），`config/meetingflow.toml` 中配置本机路径即可。
 
-实测：80 秒双发言人音频全流程约 15 秒（含模型加载）；`uv run pytest` 全部通过。注意：CPU 推理尚未通过发布门的固定三场景盲评与人工核听，转写质量结论仍以 Windows + CUDA 验收为准。
+实测：80 秒双发言人合成音频全流程约 15 秒（含模型加载）；`uv run pytest` 全部通过。CPU 推理尚未完成代表性测试集的固定三场景回归和人工核听，因此 macOS 支持在补齐该证据前不应合并到 `main`。Windows + CUDA 的已验收结论不变。
 
 ## 反馈问题
 
