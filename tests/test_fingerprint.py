@@ -155,9 +155,11 @@ def test_retry_from_diarize_does_not_probe_cuda(tmp_path: Path, monkeypatch: pyt
     _install_models(monkeypatch, calls)
     source = tmp_path / "meeting.mp4"
     source.write_bytes(b"data")
+    # 首次处理与重试必须使用同一组有效参数，否则 macOS（cpu）与 Windows（cuda:0）的设备差异会让转写指纹不一致。
+    # 同时证明整个流程（含首次处理）都不需要探测 CUDA。
+    monkeypatch.setattr(pipeline, "automodel_options", lambda: {**pipeline.AUTOMODEL_OPTIONS})
     result = pipeline.process(source, settings)
 
-    monkeypatch.setattr(pipeline, "automodel_options", lambda: {**pipeline.AUTOMODEL_OPTIONS})
     monkeypatch.setattr(pipeline, "ensure_ffmpeg_available", lambda: pytest.fail("diarize 重试不应检查 FFmpeg"))
     monkeypatch.setattr(pipeline, "analyze", lambda *_args: pytest.fail("diarize 重试不应运行模型"))
 
