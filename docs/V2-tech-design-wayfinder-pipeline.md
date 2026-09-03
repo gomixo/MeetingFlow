@@ -9,7 +9,7 @@ audited_commit: null
 branch: main
 source: codex
 created: 2026-08-05
-last_reviewed: 2026-08-05
+last_reviewed: 2026-09-03
 supersedes: V1-tech-design-meetingflow
 superseded_by: null
 related:
@@ -23,6 +23,8 @@ related:
 ## 目标与边界
 
 V2 把已完成写入的会议音频转换为适合整理会议纪要的本地对话稿。目标是内容准确、主要发言轮次可区分、可在无网络和无 Token 的环境运行。
+
+已验收的目标环境是 Windows + NVIDIA CUDA。Apple Silicon macOS 使用 CPU 执行同一模型链路，但必须单独完成代表性测试集回归和人工核听后，才能继承 Windows 的质量结论。
 
 V2 不做字幕级逐字时间戳、逐字说话人归属、会议总结、GUI、实时字幕、Web 服务或上传音频。原始录音始终只读。
 
@@ -56,10 +58,10 @@ V2 不做字幕级逐字时间戳、逐字说话人归属、会议总结、GUI�
 - language=zh、use_itn=True、batch_size_s=60。
 - FSMN-VAD：max_single_segment_time=15000、merge_vad=True、merge_length_s=10。
 - CAM++：spk_mode=vad_segment。
-- GPU：device=cuda:0，模型串行加载。
+- 有效设备：Windows 为 `cuda:0`，Apple Silicon macOS 为 `cpu`；其他无 CUDA 环境拒绝运行。模型串行加载。有效设备必须进入转写指纹和日志参数。
 - 禁止在线更新与远程代码：disable_update=True、trust_remote_code=False。
 
-三个模型使用版本化本地绝对路径。启动前必须验证模型目录、完整文件集、固定版本信息和 SHA-256；缺失或不匹配立即失败，不得回退为在线模型 ID。
+三个模型使用版本化本地绝对路径。准备脚本以 ModelScope 固定 commit 的文件清单为范围，按大小写无关的路径顺序生成跨平台一致的 manifest。启动前必须验证模型目录、完整文件集、固定版本信息和 SHA-256；缺失或不匹配立即失败，不得回退为在线模型 ID。
 
 ## 离线与空间目标
 
