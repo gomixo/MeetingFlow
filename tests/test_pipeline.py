@@ -4,13 +4,14 @@ import json
 import os
 import sqlite3
 import subprocess
+import sys
 import types
 from pathlib import Path
 
 import pytest
 
 from meetingflow import audio, pipeline
-from meetingflow.__main__ import _inbox_media, _input_path, _latest_media, _menu, _rename_menu, _select_inbox_media
+from meetingflow.__main__ import _inbox_media, _input_path, _latest_media, _menu, _read_key, _rename_menu, _select_inbox_media
 from meetingflow.analyze import ANALYSIS_FORMAT
 from meetingflow.audio import probe_audio
 
@@ -55,7 +56,7 @@ def _models(monkeypatch: pytest.MonkeyPatch) -> None:
         lambda _: {"format_name": "mp4", "duration_seconds": 2.0, "sample_rate": 48000, "channels": 2, "bit_rate": 128000, "warnings": []},
     )
     monkeypatch.setattr(pipeline, "normalize_audio", _fake_normalize)
-    monkeypatch.setattr(pipeline, "analyze", lambda _source, _settings: _fake_analysis())
+    monkeypatch.setattr(pipeline, "analyze", lambda _source, _settings, _options: _fake_analysis())
 
 
 def _fake_normalize(_source: Path, destination: Path) -> tuple[Path, float | None]:
@@ -117,7 +118,7 @@ def test_force_refreshes_existing_formats_and_missing_raw_is_rebuilt(tmp_path: P
     _models(monkeypatch)
     result = pipeline.process(source, settings)
     pipeline.save_output_formats(settings, ("srt",))
-    monkeypatch.setattr(pipeline, "analyze", lambda _source, _settings: _fake_analysis("更新内容"))
+    monkeypatch.setattr(pipeline, "analyze", lambda _source, _settings, _options: _fake_analysis("更新内容"))
 
     pipeline.process(source, settings, start_stage="probe")
     assert "更新内容" in (result.output_dir / "speakers.md").read_text(encoding="utf-8")
@@ -184,11 +185,40 @@ def test_inbox_picker_lists_latest_six_and_supports_wrapped_arrow_selection(
     (inbox / "说明.txt").write_text("ignore", encoding="utf-8")
 
     assert _inbox_media(inbox) == list(reversed(files[1:]))
-    keys = iter(["\xe0", "H", "\r"])
+    keys = iter(["up", "\r"])
     monkeypatch.setattr("meetingflow.__main__._read_key", lambda: next(keys))
     assert _select_inbox_media(inbox) == files[1]
     monkeypatch.setattr("meetingflow.__main__._read_key", lambda: "3")
     assert _select_inbox_media(inbox) == files[4]
+
+
+def test_read_key_decodes_windows_arrow(monkeypatch: pytest.MonkeyPatch) -> None:
+    keys = iter(["\xe0", "H"])
+    fake_msvcrt = types.ModuleType("msvcrt")
+    fake_msvcrt.getwch = lambda: next(keys)  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "msvcrt", fake_msvcrt)
+    monkeypatch.setattr("meetingflow.__main__.os.name", "nt")
+
+    assert _read_key() == "up"
+
+
+def test_read_key_decodes_posix_arrow_and_restores_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
+    reads = iter(["\x1b", "[B"])
+    terminal_calls: list[tuple[object, ...]] = []
+    fake_stdin = types.SimpleNamespace(fileno=lambda: 7, read=lambda _length: next(reads))
+    fake_termios = types.ModuleType("termios")
+    fake_termios.TCSADRAIN = 1  # type: ignore[attr-defined]
+    fake_termios.tcgetattr = lambda descriptor: terminal_calls.append(("get", descriptor)) or ["previous"]  # type: ignore[attr-defined]
+    fake_termios.tcsetattr = lambda descriptor, when, previous: terminal_calls.append(("set", descriptor, when, previous))  # type: ignore[attr-defined]
+    fake_tty = types.ModuleType("tty")
+    fake_tty.setraw = lambda descriptor: terminal_calls.append(("raw", descriptor))  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "termios", fake_termios)
+    monkeypatch.setitem(sys.modules, "tty", fake_tty)
+    monkeypatch.setattr("meetingflow.__main__.os.name", "posix")
+    monkeypatch.setattr("meetingflow.__main__.sys.stdin", fake_stdin)
+
+    assert _read_key() == "down"
+    assert terminal_calls == [("get", 7), ("raw", 7), ("set", 7, 1, ["previous"])]
 
 
 def test_menu_rejects_invalid_choice_and_exits(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
@@ -206,7 +236,7 @@ def test_rename_menu_stays_in_submenus_until_zero(
     settings = _settings(tmp_path)
     _models(monkeypatch)
 
-    def diarize_two(_wav: Path, _settings: object) -> dict[str, object]:
+    def diarize_two(_wav: Path, _settings: object, _options: dict[str, object]) -> dict[str, object]:
         return {
             "format": ANALYSIS_FORMAT,
             "text": "",

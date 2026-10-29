@@ -2,7 +2,7 @@
 
 ## 目标
 
-构建 Windows 本地会议音频处理流水线。OBS 只负责录音；本项目从已完成写入的音频文件开始处理。
+构建 Windows 和 Apple Silicon macOS 本地会议音频处理流水线。OBS 只负责录音；本项目从已完成写入的音频文件开始处理。
 
 ## 第一版边界
 
@@ -17,7 +17,8 @@
 - 优先标准库：`argparse`、`pathlib`、`sqlite3`、`tomllib`、`logging`。
 - 音频探测与转换调用 FFmpeg/ffprobe；转写与说话人识别使用 FunASR（SenseVoiceSmall + FSMN-VAD + CAM++）本地模型，单次综合分析。
 - Windows 启动时先将 FFmpeg `bin` 和 PyTorch `lib` 注册为 DLL 搜索目录，再导入 Torch/FunASR。
-- RTX 4060 8GB 上模型串行加载；不要引入并行 GPU 任务。
+- Windows + RTX 4060 8GB 使用 `cuda:0`；无 CUDA 的 Apple Silicon macOS 使用 CPU。设备必须记入转写指纹与日志。
+- 模型串行加载；不要引入并行 GPU 任务。
 - 新依赖必须解决当前需求；不得为未来功能预建抽象层。
 
 ## 编码与语言

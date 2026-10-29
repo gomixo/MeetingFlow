@@ -25,6 +25,7 @@ from .analyze import (
     AnalysisSettings,
     SpeakerSegment,
     analyze,
+    automodel_options,
     derive_speakers,
     derive_transcript,
     manifest_hashes,
@@ -190,14 +191,15 @@ def _normalize_fingerprint() -> str:
     return _fingerprint({"codec": "pcm_f32le", "sample_rate": 16000, "channels": 1})
 
 
-def _transcription_fingerprint(settings: AnalysisSettings) -> str:
+def _transcription_fingerprint(settings: AnalysisSettings, options: dict[str, object] | None = None) -> str:
+    effective_options = automodel_options() if options is None else options
     return _fingerprint(
         {
             "format": ANALYSIS_FORMAT,
             "funasr": _package_version("funasr"),
             "modelscope": _package_version("modelscope"),
             "manifests": manifest_hashes(settings),
-            "automodel": AUTOMODEL_OPTIONS,
+            "automodel": effective_options,
             "generate": GENERATE_OPTIONS,
         }
     )
@@ -247,11 +249,14 @@ def _should_rerun(stage: str, start_stage: str | None, rerun_active: bool, artif
     return not fingerprint_match
 
 
-def _all_fingerprints_match(database: sqlite3.Connection, job_id: str, settings: Settings) -> bool:
+def _all_fingerprints_match(
+    database: sqlite3.Connection, job_id: str, settings: Settings, options: dict[str, object] | None = None
+) -> bool:
+    effective_options = automodel_options() if options is None else options
     return (
         _fingerprint_matches(database, job_id, "probe", _probe_fingerprint())
         and _fingerprint_matches(database, job_id, "normalize", _normalize_fingerprint())
-        and _fingerprint_matches(database, job_id, "transcribe", _transcription_fingerprint(settings["models"]))
+        and _fingerprint_matches(database, job_id, "transcribe", _transcription_fingerprint(settings["models"], effective_options))
         and _fingerprint_matches(database, job_id, "diarize", _diarization_fingerprint())
     )
 
@@ -268,6 +273,7 @@ def process(source: Path, settings: Settings, start_stage: str | None = None) ->
     # 用单元素列表持有"当前阶段"，供 _run_full_pipeline 更新并由外层 except 读取以标记 stage=failed。
     stage_holder: list[str] = ["probe"]
     with _file_lock(settings["work"] / ".gpu.lock", "另一个 MeetingFlow 正在运行，请等待其完成或关闭后重试。"):
+        options = automodel_options()
         database = _open_database(settings["work"] / "meetingflow.db")
         try:
             existing = database.execute("SELECT status, output_dir FROM jobs WHERE id = ?", (job_id,)).fetchone()
@@ -279,7 +285,7 @@ def process(source: Path, settings: Settings, start_stage: str | None = None) ->
                 and existing[0] == "succeeded"
                 and start_stage is None
                 and reusable
-                and _all_fingerprints_match(database, job_id, settings)
+                and _all_fingerprints_match(database, job_id, settings, options)
             ):
                 _render_outputs(artifact_dir, output_dir, output_formats(settings), include_existing=True)
                 _write_public_result(job_id, source, artifact_dir, output_dir)
@@ -297,7 +303,7 @@ def process(source: Path, settings: Settings, start_stage: str | None = None) ->
                     # 该入口不依赖 FFmpeg：只读 JSON + 渲染。
                     stage_holder[0] = "diarize"
                     _read_analysis(artifact_dir)  # 缺失/格式异常直接抛出明确错误
-                    transcribe_fp = _transcription_fingerprint(settings["models"])
+                    transcribe_fp = _transcription_fingerprint(settings["models"], options)
                     if not _fingerprint_matches(database, job_id, "transcribe", transcribe_fp):
                         raise ValueError(
                             "原生分析产物与当前模型配置不符（转录指纹变更），retry --from diarize 无法重跑 GPU 模型。"
@@ -307,7 +313,7 @@ def process(source: Path, settings: Settings, start_stage: str | None = None) ->
                 else:
                     # 完整流水线：需要 FFmpeg（媒体探测 + 标准化）。
                     ensure_ffmpeg_available()
-                    _run_full_pipeline(database, job_id, source, output_dir, artifact_dir, settings, start_stage, stage_holder)
+                    _run_full_pipeline(database, job_id, source, output_dir, artifact_dir, settings, start_stage, stage_holder, options)
                 _cleanup_wav(artifact_dir)
                 _write_public_result(job_id, source, artifact_dir, output_dir)
             except Exception:
@@ -331,6 +337,7 @@ def _run_full_pipeline(
     settings: Settings,
     start_stage: str | None,
     stage_holder: list[str],
+    options: dict[str, object],
 ) -> None:
     """完整四阶段流水线：probe → normalize → transcribe → diarize。stage_holder 报告当前阶段供外层失败收尾。"""
     rerun_active = False
@@ -371,7 +378,7 @@ def _run_full_pipeline(
     raw_path = artifact_dir / "transcript.raw.json"
     speakers_path = artifact_dir / "speakers.json"
     normalize_fp = _normalize_fingerprint()
-    transcribe_fp = _transcription_fingerprint(settings["models"])
+    transcribe_fp = _transcription_fingerprint(settings["models"], options)
     stage_holder[0] = "normalize"
     started = time.monotonic()
     _stage(database, job_id, stage_holder[0], "running")
@@ -414,7 +421,7 @@ def _run_full_pipeline(
     _write_fingerprint(database, job_id, stage_holder[0], normalize_fp)
     _stage(database, job_id, stage_holder[0], "succeeded")
     _log(artifact_dir, "stage_succeeded", stage=stage_holder[0], elapsed_seconds=round(time.monotonic() - started, 3))
-    analysis_parameters = _analysis_parameters(settings["models"])
+    analysis_parameters = _analysis_parameters(settings["models"], options)
     stage_holder[0] = "transcribe"
     started = time.monotonic()
     _stage(database, job_id, stage_holder[0], "running", json.dumps(analysis_parameters, ensure_ascii=False))
@@ -427,7 +434,7 @@ def _run_full_pipeline(
     ):
         rerun_active = True
         print("阶段 2/4 · 语音分析（转写 + 说话人）")
-        analysis = analyze(wav_path, settings["models"])
+        analysis = analyze(wav_path, settings["models"], options)
         _atomic_json(analysis_path, analysis)
         # 重复风险标记：analyze() 不写 run.jsonl，由 pipeline 在落盘后记录。
         for flag in list(analysis.get("review_flags", [])):
@@ -628,12 +635,12 @@ def _read_speakers(artifact_dir: Path) -> list[SpeakerSegment]:
     return [item for item in payload["segments"] if isinstance(item, dict) and {"start", "end", "speaker"} <= item.keys()]
 
 
-def _analysis_parameters(settings: AnalysisSettings) -> dict[str, object]:
+def _analysis_parameters(settings: AnalysisSettings, options: dict[str, object] | None = None) -> dict[str, object]:
     return {
         "sensevoice_dir": str(settings["sensevoice_dir"]),
         "vad_dir": str(settings["vad_dir"]),
         "spk_dir": str(settings["spk_dir"]),
-        "automodel": AUTOMODEL_OPTIONS,
+        "automodel": automodel_options() if options is None else options,
         "generate": GENERATE_OPTIONS,
     }
 

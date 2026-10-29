@@ -23,7 +23,9 @@ import os
 import sys
 import tempfile
 from collections.abc import Callable
+from contextlib import suppress
 from pathlib import Path
+from typing import TypedDict
 
 MODELS = (
     {
@@ -47,6 +49,12 @@ MODELS = (
 )
 
 
+class FrozenFile(TypedDict):
+    path: str
+    bytes: int
+    sha256: str
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as file:
@@ -66,24 +74,50 @@ def _download(model_id: str, revision: str, target: Path) -> None:
     )
 
 
-def _canonical_manifest(directory: Path, model_id: str, revision: str) -> dict[str, object]:
-    files = []
-    manifest_path = (directory / "manifest.json").resolve()
-    for path in sorted(directory.rglob("*")):
-        if path.is_file() and path.resolve() != manifest_path:
-            relative = path.relative_to(directory).as_posix()
-            files.append(
-                {
-                    "path": relative,
-                    "bytes": path.stat().st_size,
-                    "sha256": _sha256(path),
-                }
-            )
+def _remote_files(model_id: str, revision: str) -> list[FrozenFile]:
+    """读取固定 commit 的仓库文件清单，避免把下载器本地元数据纳入模型 manifest。"""
+    from modelscope_hub.api import HubApi
+
+    files: list[FrozenFile] = []
+    for entry in HubApi().list_repo_files(model_id, repo_type="model", revision=revision, recursive=True):
+        if entry.type == "tree":
+            continue
+        if entry.size is None or entry.sha256 is None:
+            raise ValueError(f"远程文件缺少字节数或 SHA-256：{entry.path}")
+        files.append({"path": entry.path, "bytes": entry.size, "sha256": entry.sha256})
+    # 旧锚点由 WindowsPath 顺序生成，用 casefold 显式固定该顺序，避免 macOS 将 README.md 排到小写文件之前。
+    return sorted(files, key=lambda item: item["path"].casefold())
+
+
+def _canonical_manifest(directory: Path, model_id: str, revision: str, frozen_files: list[FrozenFile]) -> dict[str, object]:
+    files: list[FrozenFile] = []
+    for entry in frozen_files:
+        path = directory / entry["path"]
+        if not path.is_file():
+            raise ValueError(f"下载缺少冻结文件：{entry['path']}")
+        actual_bytes = path.stat().st_size
+        if actual_bytes != entry["bytes"]:
+            raise ValueError(f"下载文件字节数不匹配：{entry['path']}，期望 {entry['bytes']}，实际 {actual_bytes}")
+        actual_hash = _sha256(path)
+        if actual_hash != entry["sha256"]:
+            raise ValueError(f"下载文件 SHA-256 不匹配：{entry['path']}")
+        files.append(dict(entry))
     return {
         "model": model_id,
         "revision": revision,
         "files": files,
     }
+
+
+def _remove_unlisted_files(directory: Path, frozen_files: list[FrozenFile]) -> None:
+    """只保留固定 commit 的仓库文件，清理失败重试或下载器留下的本地元数据。"""
+    declared = {(directory / entry["path"]).resolve() for entry in frozen_files}
+    for path in directory.rglob("*"):
+        if path.is_file() and path.resolve() not in declared:
+            path.unlink()
+    for path in sorted((path for path in directory.rglob("*") if path.is_dir()), reverse=True):
+        with suppress(OSError):
+            path.rmdir()
 
 
 def _write_manifest(directory: Path, payload: dict[str, object]) -> Path:
@@ -118,7 +152,8 @@ def _prepare_model(
     staging = root / f".{spec['dir_name']}.preparing"
     staging.mkdir(parents=True, exist_ok=True)
     downloader(spec["model_id"], spec["revision"], staging)
-    manifest = _canonical_manifest(staging, spec["model_id"], spec["revision"])
+    frozen_files = _remote_files(spec["model_id"], spec["revision"])
+    manifest = _canonical_manifest(staging, spec["model_id"], spec["revision"], frozen_files)
 
     from meetingflow.analyze import FROZEN_MANIFEST_HASHES
 
@@ -126,6 +161,7 @@ def _prepare_model(
     expected = FROZEN_MANIFEST_HASHES[spec["role"]]
     if actual != expected:
         raise ValueError(f"下载内容与冻结锚点不符（{spec['role']}）：期望 {expected}，实际 {actual}；暂存目录保留在 {staging}")
+    _remove_unlisted_files(staging, frozen_files)
     _write_manifest(staging, manifest)
     staging.replace(target)
     return target
