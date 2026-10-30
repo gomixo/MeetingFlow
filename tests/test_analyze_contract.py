@@ -189,6 +189,20 @@ def test_automodel_options_rejects_unsupported_platform(monkeypatch: pytest.Monk
         automodel_options()
 
 
+def test_role_check_ignores_other_missing_models_but_still_verifies_selected_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    settings = _analysis_settings(tmp_path)
+    _install_fake_anchors(monkeypatch, settings)
+    (settings["vad_dir"] / "manifest.json").unlink()
+    verify_models(settings, only_role="sensevoice")
+    with pytest.raises(ValueError, match="模型清单缺失"):
+        verify_models(settings)
+    (settings["sensevoice_dir"] / "manifest.json").write_text("{}", encoding="utf-8")
+    with pytest.raises(ValueError, match="冻结版本不符"):
+        verify_models(settings, only_role="sensevoice")
+
+
 def test_analyze_hides_normal_funasr_noise_but_keeps_real_errors(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

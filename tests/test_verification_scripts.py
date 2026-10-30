@@ -146,3 +146,36 @@ def test_prepare_models_uses_cross_platform_frozen_path_order(monkeypatch: pytes
     monkeypatch.setattr("modelscope_hub.api.HubApi", fake_api)
 
     assert [item["path"] for item in script._remote_files("iic/test", "revision")] == ["am.mvn", "model.pt", "README.md"]
+
+
+def test_prepare_models_config_selects_only_requested_role_and_custom_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import sys
+
+    from meetingflow import analyze
+    from meetingflow.desktop_data import save_settings, settings_for_root
+
+    script = _load_script("prepare-models.py")
+    settings = settings_for_root(tmp_path / "Meetings")
+    target = tmp_path / "模型目录 含空格" / "自定义-VAD"
+    settings["models"]["vad_dir"] = target
+    config = tmp_path / "settings.toml"
+    save_settings(config, settings)
+    prepared: list[Path] = []
+    verified: list[str] = []
+
+    def prepare(root: Path, spec: dict[str, str]) -> Path:
+        destination = root / spec["dir_name"]
+        prepared.append(destination)
+        destination.mkdir()
+        return destination
+
+    def verify(_settings: object, *, only_role: str) -> None:
+        verified.append(only_role)
+
+    monkeypatch.setattr(script, "_prepare_model", prepare)
+    monkeypatch.setattr(analyze, "verify_models", verify)
+    monkeypatch.setattr(sys, "argv", ["prepare-models.py", "--config", str(config), "--roles", "vad"])
+    assert script.main() == 0
+    assert prepared == [target]
+    assert verified == ["vad"]
+    assert not settings["models"]["sensevoice_dir"].exists()

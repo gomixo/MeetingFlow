@@ -167,38 +167,40 @@ def _prepare_model(
     return target
 
 
-def _verify(root: Path) -> None:
-    """调用 analyze 模块的 verify_models 在冻结锚点上确认本次生成的清单与三个目录都被接受。"""
-    from meetingflow.analyze import FROZEN_MANIFEST_HASHES, AnalysisSettings, verify_models
-
-    settings: AnalysisSettings = {
-        "sensevoice_dir": root / "sensevoice-small-7bf4524",
-        "vad_dir": root / "fsmn-vad-f9a8b82",
-        "spk_dir": root / "campplus-a045b2a",
-    }
-    verify_models(settings)
-    print(f"  锚点核对通过: {FROZEN_MANIFEST_HASHES}")
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description="下载并校验三个冻结模型目录")
-    parser.add_argument("--root", default="D:/Meetings/Models", help="模型根目录")
+    locations = parser.add_mutually_exclusive_group()
+    locations.add_argument("--root", help="模型根目录（默认 D:/Meetings/Models）")
+    locations.add_argument("--config", type=Path, help="按 TOML 中各模型的目录下载")
+    parser.add_argument("--roles", nargs="+", choices=("sensevoice", "vad", "speaker"), help="只准备指定模型")
     args = parser.parse_args()
 
-    root = Path(args.root).resolve()
-    root.mkdir(parents=True, exist_ok=True)
+    from meetingflow.analyze import verify_models
+    from meetingflow.pipeline import load_settings
 
-    print(f"模型根目录: {root}")
+    root = Path(args.root or "D:/Meetings/Models").expanduser().resolve()
+    try:
+        settings = load_settings(args.config)["models"] if args.config else {
+            "sensevoice_dir": root / MODELS[0]["dir_name"], "vad_dir": root / MODELS[1]["dir_name"], "spk_dir": root / MODELS[2]["dir_name"],
+        }
+    except (OSError, ValueError) as error:
+        print(f"无法读取模型目录配置：{error}", file=sys.stderr)
+        return 1
+    fields = {"sensevoice": "sensevoice_dir", "vad": "vad_dir", "speaker": "spk_dir"}
+    selected = [spec for spec in MODELS if args.roles is None or spec["role"] in args.roles]
+
     failures = 0
-    for spec in MODELS:
-        target = root / spec["dir_name"]
+    for spec in selected:
+        target = settings[fields[spec["role"]]]
+        spec = {**spec, "dir_name": target.name}
         print(f"\n[{spec['role']}] {spec['model_id']} @ {spec['revision'][:7]} → {target}")
         try:
+            target.parent.mkdir(parents=True, exist_ok=True)
             if target.exists():
                 print("  正式目录已存在，仅在最后执行只读校验")
             else:
                 print("  下载中（首次需要联网）...")
-            prepared = _prepare_model(root, spec)
+            prepared = _prepare_model(target.parent, spec)
             print(f"  已准备：{prepared}")
         except Exception as error:
             print(f"  失败: {error}", file=sys.stderr)
@@ -210,16 +212,16 @@ def main() -> int:
 
     print("\n调用 verify_models 校验...")
     try:
-        _verify(root)
+        for spec in selected:
+            verify_models(settings, only_role=spec["role"])
     except Exception as error:
         print(f"  校验失败: {error}", file=sys.stderr)
         return 1
     print("  校验通过")
 
     print("\n准备完成。日常推理无需联网：")
-    print(f"  - {root}/sensevoice-small-7bf4524/")
-    print(f"  - {root}/fsmn-vad-f9a8b82/")
-    print(f"  - {root}/campplus-a045b2a/")
+    for spec in selected:
+        print(f"  - {settings[fields[spec['role']]]}")
     return 0
 
 

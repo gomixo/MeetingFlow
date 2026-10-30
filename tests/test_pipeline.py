@@ -5,6 +5,7 @@ import os
 import sqlite3
 import subprocess
 import sys
+import time
 import types
 from pathlib import Path
 
@@ -173,6 +174,42 @@ def test_latest_media_and_dragged_path(tmp_path: Path) -> None:
         _latest_media(tmp_path / "empty")
 
 
+@pytest.mark.skipif(os.name == "nt", reason="macOS 文件名与路径转义测试")
+@pytest.mark.parametrize(
+    ("name", "escaped"),
+    [
+        ("会议 录音.mp4", r"会议\ 录音.mp4"),
+        ("会议 (终稿).mp4", r"会议\ \(终稿\).mp4"),
+        ("Tom's 会议.mp4", r"Tom\'s\ 会议.mp4"),
+        ("会议\\录音.mp4", r"会议\\录音.mp4"),
+    ],
+)
+def test_input_path_accepts_macos_drag_escapes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str, escaped: str
+) -> None:
+    monkeypatch.setattr("meetingflow.__main__.sys.platform", "darwin")
+    source = tmp_path / name
+    source.write_bytes(b"audio")
+
+    assert _input_path(f"{tmp_path}/{escaped}") == source
+    assert _input_path(f"{tmp_path}/{escaped}").is_file()
+
+
+@pytest.mark.parametrize("value", ["/Users/test/会议 录音.mp4", "/Users/test/Tom's 会议.mp4", '"/Users/test/会议 录音.mp4"'])
+def test_input_path_preserves_pasted_macos_paths(monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    monkeypatch.setattr("meetingflow.__main__.sys.platform", "darwin")
+
+    assert _input_path(value) == Path(value.strip('"'))
+
+
+@pytest.mark.parametrize("quoted", [False, True])
+def test_input_path_preserves_windows_backslashes(monkeypatch: pytest.MonkeyPatch, quoted: bool) -> None:
+    monkeypatch.setattr("meetingflow.__main__.sys.platform", "win32")
+    value = r"D:\Meetings\会议 录音.mp4"
+
+    assert str(_input_path(f'"{value}"' if quoted else value)) == value
+
+
 def test_inbox_picker_lists_latest_six_and_supports_wrapped_arrow_selection(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -190,6 +227,9 @@ def test_inbox_picker_lists_latest_six_and_supports_wrapped_arrow_selection(
     assert _select_inbox_media(inbox) == files[1]
     monkeypatch.setattr("meetingflow.__main__._read_key", lambda: "3")
     assert _select_inbox_media(inbox) == files[4]
+    keys = iter(["\x1b"])
+    monkeypatch.setattr("meetingflow.__main__._read_key", lambda: next(keys))
+    assert _select_inbox_media(inbox) is None
 
 
 def test_read_key_decodes_windows_arrow(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -202,23 +242,41 @@ def test_read_key_decodes_windows_arrow(monkeypatch: pytest.MonkeyPatch) -> None
     assert _read_key() == "up"
 
 
-def test_read_key_decodes_posix_arrow_and_restores_terminal(monkeypatch: pytest.MonkeyPatch) -> None:
-    reads = iter(["\x1b", "[B"])
-    terminal_calls: list[tuple[object, ...]] = []
-    fake_stdin = types.SimpleNamespace(fileno=lambda: 7, read=lambda _length: next(reads))
-    fake_termios = types.ModuleType("termios")
-    fake_termios.TCSADRAIN = 1  # type: ignore[attr-defined]
-    fake_termios.tcgetattr = lambda descriptor: terminal_calls.append(("get", descriptor)) or ["previous"]  # type: ignore[attr-defined]
-    fake_termios.tcsetattr = lambda descriptor, when, previous: terminal_calls.append(("set", descriptor, when, previous))  # type: ignore[attr-defined]
-    fake_tty = types.ModuleType("tty")
-    fake_tty.setraw = lambda descriptor: terminal_calls.append(("raw", descriptor))  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "termios", fake_termios)
-    monkeypatch.setitem(sys.modules, "tty", fake_tty)
-    monkeypatch.setattr("meetingflow.__main__.os.name", "posix")
-    monkeypatch.setattr("meetingflow.__main__.sys.stdin", fake_stdin)
+@pytest.mark.skipif(os.name == "nt", reason="POSIX 伪终端测试")
+@pytest.mark.parametrize(
+    ("keys", "expected"),
+    [(b"\x1b[A", "up"), (b"\x1b[B", "down"), (b"\x1b", "\x1b"), (b"\x1b[", "\x1b"), (b"0", "0"), (b"\r", "\r")],
+)
+def test_read_key_in_posix_terminal_returns_without_blocking_and_restores_terminal(keys: bytes, expected: str) -> None:
+    import pty
+    import termios
 
-    assert _read_key() == "down"
-    assert terminal_calls == [("get", 7), ("raw", 7), ("set", 7, 1, ["previous"])]
+    master, slave = pty.openpty()
+    previous = termios.tcgetattr(slave)
+    process = subprocess.Popen(
+        [sys.executable, "-c", "from meetingflow.__main__ import _read_key; print(repr(_read_key()), flush=True)"],
+        stdin=slave, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    try:
+        deadline = time.monotonic() + 3
+        while termios.tcgetattr(slave)[3] & termios.ICANON:
+            assert time.monotonic() < deadline, "读取按键未进入原始模式"
+            time.sleep(0.01)
+        os.write(master, keys)
+        stdout, stderr = process.communicate(timeout=3)
+
+        assert process.returncode == 0, stderr
+        assert stdout.strip() == repr(expected)
+        restored = termios.tcgetattr(slave)
+        assert restored[:3] == previous[:3]
+        mode_flags = termios.ICANON | termios.ECHO | termios.ISIG | termios.IEXTEN
+        assert restored[3] & mode_flags == previous[3] & mode_flags
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait()
+        os.close(master)
+        os.close(slave)
 
 
 def test_menu_rejects_invalid_choice_and_exits(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:

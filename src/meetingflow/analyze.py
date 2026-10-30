@@ -82,14 +82,18 @@ def manifest_hashes(settings: AnalysisSettings) -> dict[str, str]:
     return hashes
 
 
-def verify_models(settings: AnalysisSettings) -> None:
+def verify_models(settings: AnalysisSettings, *, only_role: str | None = None) -> None:
     """加载模型前按冻结锚点 + 清单逐文件校验，缺失或不匹配直接失败，禁止回退在线模型。
 
     信任根是 FROZEN_MANIFEST_HASHES：目录 manifest.json 的规范化哈希必须等于冻结常量，
     防止“清单与文件一起被替换”；随后再按清单校验每个文件字节数与 SHA-256，并拒绝路径穿越与目录多余文件。
     """
+    if only_role is not None and only_role not in FROZEN_MANIFEST_HASHES:
+        raise ValueError(f"未知模型角色：{only_role}")
     errors: list[str] = []
     for role, directory in _model_dirs(settings):
+        if only_role is not None and role != only_role:
+            continue
         directory_abs = directory.resolve()
         if not directory.is_dir():
             errors.append(f"模型目录不存在：{directory}")

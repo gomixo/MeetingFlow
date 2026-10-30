@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import shlex
 import sys
 import warnings
 from datetime import datetime
@@ -129,7 +130,7 @@ def _inbox_media(inbox: Path, *, limit: int = 6) -> list[Path]:
 def _select_inbox_media(inbox: Path) -> Path | None:
     files = _inbox_media(inbox)
     selected = 0
-    print("\n请选择 Inbox 文件（↑/↓ 移动，Enter 确认，0 返回）：")
+    print("\n请选择 Inbox 文件（↑/↓ 移动，Enter 确认，0/Esc 返回）：")
     _draw_media_choices(files, selected)
     while True:
         key = _read_key()
@@ -139,7 +140,7 @@ def _select_inbox_media(inbox: Path) -> Path | None:
             _draw_media_choices(files, selected)
         elif key == "\r":
             return files[selected]
-        elif key == "0":
+        elif key in {"0", "\x1b"}:
             return None
         elif key.isdigit() and 1 <= int(key) <= len(files):
             selected = int(key) - 1
@@ -156,7 +157,7 @@ def _draw_media_choices(files: list[Path], selected: int) -> None:
 
 
 def _read_key() -> str:
-    """读一个按键：方向键统一返回 "up"/"down"，其余返回字符本身。Windows 用 msvcrt，其余用 termios 原始模式。"""
+    """读取菜单按键：方向键返回 up/down，单独的 Esc 有限时等待后返回。"""
     if os.name == "nt":
         import msvcrt
 
@@ -164,6 +165,7 @@ def _read_key() -> str:
         if key in {"\x00", "\xe0"}:
             return {"H": "up", "P": "down"}.get(msvcrt.getwch(), "")
         return key
+    import select
     import termios
     import tty
 
@@ -171,16 +173,29 @@ def _read_key() -> str:
     previous = termios.tcgetattr(descriptor)
     try:
         tty.setraw(descriptor)
-        key = sys.stdin.read(1)
-        if key == "\x1b":
-            return {"[A": "up", "[B": "down"}.get(sys.stdin.read(2), "")
-        return key
+        # 绕过文本缓冲，确保 select 能检测到方向键的后续字节。
+        key = os.read(descriptor, 1)
+        if key == b"\x1b":
+            for _ in range(2):
+                if not select.select([descriptor], [], [], 0.1)[0]:
+                    return "\x1b"
+                key += os.read(descriptor, 1)
+            return {b"\x1b[A": "up", b"\x1b[B": "down"}.get(key, "")
+        return key.decode("utf-8", errors="ignore")
     finally:
         termios.tcsetattr(descriptor, termios.TCSADRAIN, previous)
 
 
 def _input_path(value: str) -> Path:
-    if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+    if sys.platform == "darwin" and "\\" in value:
+        try:
+            paths = shlex.split(value)
+        except ValueError as error:
+            raise ValueError("文件路径中的引号或转义不完整") from error
+        if len(paths) != 1:
+            raise ValueError("请仅输入一个文件路径，包含空格的路径可用引号包住")
+        value = paths[0]
+    elif len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
         value = value[1:-1]
     if not value:
         raise ValueError("没有输入文件路径")
